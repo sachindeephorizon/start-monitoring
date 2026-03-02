@@ -1,0 +1,275 @@
+import { StyleSheet } from 'react-native';
+
+export const styles = StyleSheet.create({
+  scheduleContainer: {
+    padding: 16,
+  },
+  scheduleDescription: {
+    fontSize: 16,
+    color: '#5a6c7d',
+    marginBottom: 24,
+    textAlign: 'center',
+  },
+  inputSection: {
+    marginBottom: 20,
+  },
+  inputLabel: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginBottom: 8,
+  },
+  dateInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+    borderRadius: 8,
+    padding: 12,
+  },
+  dateText: {
+    fontSize: 16,
+    color: '#2c3e50',
+    flex: 1,
+    marginLeft: 8,
+  },
+  timeInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+    borderRadius: 8,
+    padding: 12,
+  },
+  timeText: {
+    fontSize: 16,
+    color: '#2c3e50',
+    flex: 1,
+    marginLeft: 8,
+  },
+  frequencyOptions: {
+    flexDirection: 'row',
+    gap: 16,
+  },
+  frequencyOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  radioButton: {
+    width: 18,
+    height: 18,
+    borderRadius: 9,
+    borderWidth: 2,
+    borderColor: '#bdc3c7',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  radioButtonSelected: {
+    borderColor: '#1f2937',
+  },
+  radioButtonInner: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    backgroundColor: '#1f2937',
+  },
+  frequencyText: {
+    fontSize: 16,
+    color: '#2c3e50',
+  },
+  notesInput: {
+    backgroundColor: 'rgba(255, 255, 255, 0.8)',
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+    borderRadius: 8,
+    padding: 12,
+    minHeight: 80,
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+  },
+  notesPlaceholder: {
+    fontSize: 14,
+    color: '#95a5a6',
+    flex: 1,
+  },
+  notesText: {
+    color: '#2c3e50',
+  },
+  notesContainer: {
+    marginBottom: 8,
+  },
+  suggestionContainer: {
+    marginTop: 12,
+    flexDirection: 'row',
+  },
+  suggestionChip: {
+    backgroundColor: '#f0f2f5',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    marginRight: 8,
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+  },
+  suggestionText: {
+    fontSize: 13,
+    color: '#5a6c7d',
+  },
+  scheduleCheckButton: {
+    backgroundColor: '#1f2937',
+    borderRadius: 12,
+    padding: 16,
+    alignItems: 'center',
+    marginTop: 8,
+    marginBottom: 24,
+  },
+  scheduleCheckButtonText: {
+    color: '#ffffff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  upcomingSection: {
+    marginTop: 16,
+  },
+  upcomingSectionTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: '#2c3e50',
+    marginBottom: 16,
+  },
+  upcomingCheckIn: {
+    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: '#e1e8ed',
+  },
+  checkInHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  checkInMainInfo: {
+    flex: 1,
+  },
+  checkInDate: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: '#2c3e50',
+  },
+  checkInFrequency: {
+    fontSize: 14,
+    color: '#7f8c8d',
+    marginTop: 2,
+  },
+  checkInActions: {
+    flexDirection: 'row',
+    gap: 8,
+  },
+  editButton: {
+    padding: 8,
+  },
+  deleteButton: {
+    padding: 8,
+  },
+  checkInNotes: {
+    fontSize: 14,
+    color: '#5a6c7d',
+    fontStyle: 'italic',
+  },
+  noCheckInsContainer: {
+    alignItems: 'center',
+    padding: 24,
+  },
+  noCheckInsText: {
+    fontSize: 16,
+    color: '#95a5a6',
+    textAlign: 'center',
+  },
+  recurringPreview: {
+    backgroundColor: 'rgba(39, 174, 96, 0.08)',
+    borderRadius: 8,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(39, 174, 96, 0.15)',
+  },
+  recurringItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: 8,
+  },
+  recurringText: {
+    fontSize: 14,
+    color: '#27ae60',
+    marginLeft: 8,
+    flex: 1,
+    fontWeight: '500',
+  },
+  recurringNote: {
+    fontSize: 12,
+    color: '#27ae60',
+    marginLeft: 4,
+    marginBottom: 2,
+  },
+  // Production modal styles
+  nextCheckInAlert: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: 'rgba(39, 174, 96, 0.1)',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: 'rgba(39, 174, 96, 0.2)',
+  },
+  nextCheckInText: {
+    fontSize: 14,
+    color: '#27ae60',
+    marginLeft: 8,
+    fontWeight: '500',
+  },
+  scheduleCheckButtonDisabled: {
+    backgroundColor: '#bdc3c7',
+    opacity: 0.7,
+  },
+  loadingContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkInTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 4,
+  },
+  statusBadge: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    color: '#ffffff',
+    fontWeight: '600',
+  },
+  lastTriggeredText: {
+    fontSize: 12,
+    color: '#7f8c8d',
+    marginTop: 4,
+  },
+  noCheckInsSubtext: {
+    fontSize: 14,
+    color: '#bdc3c7',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+});

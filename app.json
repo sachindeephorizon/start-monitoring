@@ -1,0 +1,115 @@
+{
+  "expo": {
+    "name": "DeepHorizon Security",
+    "slug": "deephorizon-security",
+    "version": "1.0.39",
+    "orientation": "portrait",
+    "icon": "./assets/logo.png",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "image": "./assets/Logo-T.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0B0B0B"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.deephorizon.security",
+      "buildNumber": "139",
+      "jsEngine": "hermes",
+      "infoPlist": {
+        "NSLocationWhenInUseUsageDescription": "DeepHorizon needs your location to provide real-time security tracking and emergency response services.",
+        "NSLocationAlwaysAndWhenInUseUsageDescription": "DeepHorizon needs continuous location access to track your safety and respond to emergencies, even when the app is in the background.",
+        "NSLocationAlwaysUsageDescription": "DeepHorizon requires background location access to provide continuous security monitoring and emergency response.",
+        "NSCameraUsageDescription": "DeepHorizon needs camera access for video monitoring sessions with security agents.",
+        "NSMicrophoneUsageDescription": "Microphone access is required for audio and video calls.",
+        "NSPhotoLibraryUsageDescription": "DeepHorizon needs access to your photo library so you can upload profile images and share images when needed.",
+        "NSPhotoLibraryAddUsageDescription": "DeepHorizon needs permission to save images to your photo library when you choose to download or save media.",
+        "UIBackgroundModes": [
+          "location",
+          "audio",
+          "remote-notification"
+        ],
+        "ITSAppUsesNonExemptEncryption": false
+      },
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "icon": "./assets/logo.png",
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/logo.png",
+        "backgroundColor": "#000000"
+      },
+      "splash": {
+        "image": "./assets/Logo-T.png",
+        "resizeMode": "contain",
+        "backgroundColor": "#0B0B0B"
+      },
+      "package": "com.deephorizon.security",
+      "versionCode": 139,
+      "permissions": [
+        "ACCESS_FINE_LOCATION",
+        "ACCESS_COARSE_LOCATION",
+        "ACCESS_BACKGROUND_LOCATION",
+        "CAMERA",
+        "RECORD_AUDIO",
+        "FOREGROUND_SERVICE",
+        "FOREGROUND_SERVICE_LOCATION"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      "expo-font",
+      [
+        "expo-location",
+        {
+          "locationAlwaysAndWhenInUsePermission": "DeepHorizon needs continuous location access to track your safety and respond to emergencies.",
+          "locationAlwaysPermission": "DeepHorizon requires background location access for continuous security monitoring.",
+          "locationWhenInUsePermission": "DeepHorizon needs your location to provide real-time security tracking.",
+          "isIosBackgroundLocationEnabled": true,
+          "isAndroidBackgroundLocationEnabled": true
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "icon": "./assets/logo.png",
+          "color": "#ffffff",
+          "sounds": [
+            "./assets/siren.mp3"
+          ],
+          "mode": "production"
+        }
+      ],
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "DeepHorizon needs camera access for video monitoring sessions with security agents."
+        }
+      ],
+      "expo-video",
+      "./plugins/withSubscriptionStoreView"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "27fb532d-c0f0-45e5-919e-0e7b9a62366d"
+      },
+      "supabaseUrl": "",
+      "supabaseAnonKey": "",
+      "streamApiKey": "",
+      "streamTokenUrl": "",
+      "streamAppId": "hp84m8c435v6",
+      "agentDashboardUrl": ""
+    },
+    "runtimeVersion": "1.0.39",
+    "updates": {
+      "url": "https://u.expo.dev/27fb532d-c0f0-45e5-919e-0e7b9a62366d"
+    }
+  }
+}

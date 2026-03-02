@@ -1,0 +1,32 @@
+diff --git a/node_modules/expo-modules-core/src/sweet/setUpJsLogger.fx.ts b/node_modules/expo-modules-core/src/sweet/setUpJsLogger.fx.ts
+index 58faf73..5f7ccd7 100644
+--- a/node_modules/expo-modules-core/src/sweet/setUpJsLogger.fx.ts
++++ b/node_modules/expo-modules-core/src/sweet/setUpJsLogger.fx.ts
+@@ -7,7 +7,17 @@ type LogListener = {
+   eventName: string;
+ };
+ 
+-if (__DEV__ && (Platform.OS === 'android' || Platform.OS === 'ios') && NativeJSLogger) {
++// Some runtimes/builds can expose the optional native module in an unexpected shape
++// (e.g. as `{ default: ... }`) or without `addListener`. Guard aggressively to
++// avoid crashing the JS bundle before AppRegistry registers the app.
++const JSLogger: any = (NativeJSLogger as any)?.default ?? NativeJSLogger;
++
++if (
++  __DEV__ &&
++  (Platform.OS === 'android' || Platform.OS === 'ios') &&
++  JSLogger &&
++  typeof JSLogger.addListener === 'function'
++) {
+   const onNewException: LogListener = {
+     eventName: 'ExpoModulesCoreJSLogger.onNewError',
+     action: console.error,
+@@ -42,7 +52,7 @@ if (__DEV__ && (Platform.OS === 'android' || Platform.OS === 'ios') && NativeJSL
+   ];
+ 
+   for (const listener of listeners) {
+-    NativeJSLogger.addListener(listener.eventName, ({ message }: { message: string }) => {
++    JSLogger.addListener(listener.eventName, ({ message }: { message: string }) => {
+       listener.action(message);
+     });
+   }

@@ -1,0 +1,4 @@
+-- Placeholder migration file for remote history alignment.
+-- Version: 20251027132727
+-- This project was missing historical migration files locally.
+-- Intentionally empty; remote DB already contains the applied changes.
