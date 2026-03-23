@@ -6,9 +6,11 @@
  */
 
 import { useContext } from 'react';
-import { AuthContext } from './auth.context';
+
 import { AuthService } from './auth.service';
 import { SignInCredentials, SignUpCredentials, AuthUser } from './auth.types';
+import { AuthContext } from './AuthContext';
+import { UserProfile } from '../profile';
 
 /**
  * Hook to access authentication context
@@ -42,7 +44,7 @@ export function useIsAuthenticated(): boolean {
  * 
  * @returns Current user if authenticated, null otherwise
  */
-export function useCurrentUser(): AuthUser | null {
+export function useCurrentUser(): UserProfile | null {
   const auth = useAuth();
   if (auth.status === 'authenticated') {
     return auth.user;

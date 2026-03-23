@@ -20,8 +20,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { TABLES } from '@/lib/supabase';
+import { skipPasskeySetup, updatePasskey } from '@/api/user';
 
 interface PasskeySetupScreenProps {
   onComplete: () => void;
@@ -73,17 +72,33 @@ export const PasskeySetupScreen: React.FC<PasskeySetupScreenProps> = ({
   }, [step]);
 
   const validatePasskey = (value: string): string | null => {
-    if (value.length !== 4) {
-      return 'Passkey must be exactly 4 digits';
-    }
-    if (!/^\d{4}$/.test(value)) {
-      return 'Passkey must contain only numbers';
-    }
-    if (value === '0000' || value === '1234' || value === '1111') {
-      return 'Please choose a more secure passkey';
-    }
-    return null;
-  };
+  if (!/^\d{4}$/.test(value)) {
+    return 'Passkey must be exactly 4 digits';
+  }
+
+  // All digits same (0000, 1111, etc.)
+  if (/^(\d)\1{3}$/.test(value)) {
+    return 'Passkey cannot have all identical digits';
+  }
+
+  // Sequential increasing (1234, 2345, etc.)
+  if ('0123456789'.includes(value)) {
+    return 'Passkey cannot be sequential numbers';
+  }
+
+  // Sequential decreasing (4321, 5432, etc.)
+  if ('9876543210'.includes(value)) {
+    return 'Passkey cannot be reverse sequential numbers';
+  }
+
+  // Common weak patterns
+  const weakPins = ['1212', '1122', '6969', '2580'];
+  if (weakPins.includes(value)) {
+    return 'Passkey is too easy to guess';
+  }
+
+  return null;
+};
 
   const handleSetupNext = () => {
     const error = validatePasskey(passkey);
@@ -106,29 +121,8 @@ export const PasskeySetupScreen: React.FC<PasskeySetupScreenProps> = ({
     try {
       setIsLoading(true);
 
-      // Store passkey as plain text temporarily, let the RPC handle bcrypt hashing
-      console.log('PasskeySetupScreen: Storing passkey for bcrypt hashing on server');
-      const plainPasskey = passkey;
-
-      // Get current user
-      const authSession = await ensureValidSession();
-      const user = authSession?.user;
-      console.log('PasskeySetupScreen: Starting passkey setup for user:', user?.id);
-      if (!user) {
-        throw new Error('User not found: No active session');
-      }
-
-      // Update mobile_users table with bcrypt hashed passkey using RPC
-      console.log('PasskeySetupScreen: Using RPC to update passkey with bcrypt');
-      const { error: updateError } = await supabase.rpc('update_mobile_user_passkey_bcrypt', {
-        user_id: user.id,
-        plain_passkey: plainPasskey
-      });
-
-      if (updateError) {
-        console.error('PasskeySetupScreen: Update error details:', updateError);
-        throw updateError;
-      }
+      // Call API to save passkey
+      const res = await updatePasskey(passkey);
 
       // Success
       Alert.alert(
@@ -166,15 +160,8 @@ export const PasskeySetupScreen: React.FC<PasskeySetupScreenProps> = ({
           style: 'destructive',
           onPress: async () => {
             try {
-              // Mark that user has seen the setup (even if skipped) so it doesn't show again
-              const skipSession = await ensureValidSession();
-              const user = skipSession?.user;
-              if (user) {
-                await supabase
-                  .from(TABLES.MOBILE_USERS)
-                  .update({ passkey_setup_completed: true }) // Mark as completed even if skipped
-                  .eq('id', user.id);
-              }
+
+              const res = await skipPasskeySetup();
               if (onSkip) {
                 onSkip();
               } else {

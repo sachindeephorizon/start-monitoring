@@ -14,10 +14,10 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import DateTimePicker from '@react-native-community/datetimepicker';
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { TABLES } from '@/lib/supabase';
 import { indianPhoneToE164, normalizeIndianPhoneInput } from '@/utils/phone';
-import { apiBaseUrl } from '@/config/environment';
+import { useAuth } from '@/core/auth';
+import { updateUserProfile } from '@/api/user';
+
 
 interface CompleteProfileScreenProps {
   onComplete: () => void;
@@ -34,6 +34,10 @@ export const CompleteProfileScreen: React.FC<CompleteProfileScreenProps> = ({
   const [loading, setLoading] = useState(false);
   const [keyboardHeight, setKeyboardHeight] = useState(0);
   
+  const auth = useAuth();
+
+
+
   // Identity fields (always collected for a usable profile)
   const [fullName, setFullName] = useState('');
   const [email, setEmail] = useState('');
@@ -69,11 +73,13 @@ export const CompleteProfileScreen: React.FC<CompleteProfileScreenProps> = ({
 
   const checkUserData = useCallback(async () => {
     try {
-      const session = await ensureValidSession();
-      const user = session?.user;
+      const user = auth.profile;
       if (!user) {
         return;
       }
+
+     
+
 
       // Filter out synthetic OTP emails — they are GoTrue-internal only
       const isSynthetic = (e?: string | null) =>
@@ -86,44 +92,24 @@ export const CompleteProfileScreen: React.FC<CompleteProfileScreenProps> = ({
 
       // Determine if we need to force password setup.
       // We mark this in user_metadata after the first successful setup.
-      const meta = (user.user_metadata ?? {}) as Record<string, any>;
-      const hasPassword = meta?.has_password === true;
-      const providers = Array.isArray((user as any)?.app_metadata?.providers)
-        ? ((user as any).app_metadata.providers as string[])
-        : [];
-      const provider = String((user as any)?.app_metadata?.provider ?? '');
-      const isPhoneAuth = providers.includes('phone') || provider === 'phone';
-      setIsNewUser(Boolean(isPhoneAuth && !hasPassword));
+      
 
       // Check if user has name and email in mobile_users
-      const { data: profileData } = await supabase
-        .from(TABLES.MOBILE_USERS)
-        .select('name, email')
-        .eq('id', user.id)
-        .single();
+     
 
-      if (profileData) {
+      if (user) {
         // Prefill ONLY if user hasn't typed anything yet (avoid overwriting user input)
-        if (profileData.name) {
-          setFullName((prev) => (prev ? prev : String(profileData.name)));
+        if (user.name) {
+          setFullName((prev) => (prev ? prev : String(user.name)));
         }
         // Only prefill with real emails (skip synthetic)
-        const profileEmail = profileData.email && !isSynthetic(profileData.email) ? profileData.email : null;
+        const profileEmail = user.email && !isSynthetic(user.email) ? user.email : null;
         if (profileEmail) {
           setEmail((prev) => (prev ? prev : String(profileEmail)));
         } else if (realAuthEmail) {
           setEmail((prev) => (prev ? prev : String(realAuthEmail)));
         }
-      } else {
-        // Prefill with auth user data if available (avoid overwriting user input)
-        const metaName = (user.user_metadata as any)?.name;
-        if (metaName) {
-          setFullName((prev) => (prev ? prev : String(metaName)));
-        }
-        if (realAuthEmail) {
-          setEmail((prev) => (prev ? prev : String(realAuthEmail)));
-        }
-      }
+      } 
     } catch (error) {
       console.error('Error checking user data:', error);
     }
@@ -179,19 +165,6 @@ export const CompleteProfileScreen: React.FC<CompleteProfileScreenProps> = ({
     };
   }, []);
 
-  // iOS-only: if auth session restores after this screen mounts, re-run checkUserData.
-  // This prevents "data appears only after swipe up" when user is initially null.
-  useEffect(() => {
-    if (Platform.OS !== 'ios') return;
-    const { data: sub } = supabase.auth.onAuthStateChange((event, session) => {
-      if (session?.user && (event === 'INITIAL_SESSION' || event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED')) {
-        checkUserData();
-      }
-    });
-    return () => {
-      sub?.subscription?.unsubscribe?.();
-    };
-  }, [checkUserData]);
 
   const validateForm = (): boolean => {
     const newErrors: Record<string, string> = {};
@@ -323,305 +296,93 @@ export const CompleteProfileScreen: React.FC<CompleteProfileScreenProps> = ({
     return true;
   };
 
-  const handleSubmit = async () => {
-    const formValid = validateForm();
-    const passwordValid = validatePassword();
-    if (!formValid || !passwordValid) {
-      Alert.alert('Validation Error', 'Please fill in all required fields correctly.');
-      return;
+const handleSubmit = async () => {
+  const formValid = validateForm();
+  const passwordValid = validatePassword();
+
+  if (!formValid || !passwordValid) {
+    Alert.alert('Validation Error', 'Please fill in all required fields correctly.');
+    return;
+  }
+
+  try {
+    setLoading(true);
+
+    const user = auth.profile;
+    if (!user) {
+      throw new Error('User not authenticated');
     }
 
-    try {
-      setLoading(true);
+    const isSynthetic = (e?: string | null) =>
+      Boolean(e && /^phone_\d+@auth\.deephorizon\.app$/i.test(e.trim()));
 
-      const authSession = await ensureValidSession();
-      const user = authSession?.user;
-      if (!user) {
-        throw new Error('User not found. Please try logging in again.');
-      }
+    const userInputEmail = email.trim();
+    const authUserEmail =
+      user.email && !isSynthetic(user.email) ? user.email.trim() : '';
 
-      // Format date of birth
-      const dobString = dateOfBirth ? dateOfBirth.toISOString().split('T')[0] : null;
+    const effectiveEmail = (userInputEmail || authUserEmail).trim();
 
-      /**
-       * ✅ CRITICAL FIX: Proper phone number validation
-       *
-       * OLD: Only checked if conversion returned null
-       * NEW: Validate format and length after conversion
-       */
-      const emergencyPhoneE164 = indianPhoneToE164(emergencyContactPhone);
-
-      // Check if conversion succeeded
-      if (!emergencyPhoneE164) {
-        throw new Error('Emergency contact phone is required and must be a valid Indian mobile number');
-      }
-
-      // Validate E.164 format (should start with + and be 10-15 digits)
-      const e164Regex = /^\+[1-9]\d{1,14}$/;
-      if (!e164Regex.test(emergencyPhoneE164)) {
-        console.error('[CompleteProfile] Invalid E.164 phone format:', emergencyPhoneE164);
-        throw new Error('Emergency contact phone number is invalid. Please enter a valid 10-digit mobile number');
-      }
-
-      // Additional validation for Indian numbers (should be +91 followed by 10 digits)
-      if (!emergencyPhoneE164.startsWith('+91') || emergencyPhoneE164.length !== 13) {
-        console.error('[CompleteProfile] Invalid Indian phone number:', emergencyPhoneE164);
-        throw new Error('Emergency contact phone must be a valid 10-digit Indian mobile number');
-      }
-
-      const updateData: any = {
-        id: user.id,
-        date_of_birth: dobString,
-        home_address: homeAddress.trim(),
-        emergency_contact_name: emergencyContactName.trim(),
-        emergency_contact_phone: emergencyPhoneE164,
-        emergency_contact_relationship: emergencyContactRelation.trim(),
-        profile_completion_completed: true,
-        updated_at: new Date().toISOString(),
-      };
-
-      // Always update name and ensure we persist a NON-NULL email.
-      // Filter out synthetic GoTrue-internal emails — only persist real user emails.
-      const isSynthetic = (e?: string | null) =>
-        Boolean(e && /^phone_\d+@auth\.deephorizon\.app$/i.test(e.trim()));
-      const userInputEmail = email.trim();
-      const authUserEmail = user.email && !isSynthetic(user.email) ? user.email.trim() : '';
-      const effectiveEmail = (userInputEmail || authUserEmail).trim();
-      if (!effectiveEmail) {
-        throw new Error('Email is required');
-      }
-
-      updateData.name = fullName.trim();
-      updateData.email = effectiveEmail;
-
-      /**
-       * ✅ CRITICAL FIX: Ensure phone is always set (required by database constraint)
-       * - If user signed up with phone: use user.phone (already E.164 formatted)
-       * - If user signed up with email: use phone from form (convert to E.164)
-       */
-      if (user.phone) {
-        updateData.phone = user.phone; // Already E.164 formatted from auth
-      } else {
-        // User signed up with email - use phone from form
-        const userPhoneE164 = indianPhoneToE164(phone);
-        if (!userPhoneE164) {
-          throw new Error('Phone number is required');
-        }
-        updateData.phone = userPhoneE164;
-      }
-
-      // Add optional fields only if they have values
-      if (bloodGroup.trim() && bloodGroup.trim() !== 'None') {
-        updateData.blood_type = bloodGroup.trim();
-      } else {
-        updateData.blood_type = null;
-      }
-
-      if (allergens.trim() && allergens.trim() !== 'None') {
-        updateData.allergies = allergens.trim();
-      } else {
-        updateData.allergies = null;
-      }
-
-      if (workAddress.trim()) {
-        updateData.work_address = workAddress.trim();
-      } else {
-        updateData.work_address = null;
-      }
-
-      // Upsert mobile_users table (handles missing row + avoids loops)
-      const { data: updatedData, error: updateError } = await supabase
-        .from(TABLES.MOBILE_USERS)
-        .upsert(updateData, { onConflict: 'id' })
-        .select(
-          [
-            'profile_completion_completed',
-            'name',
-            'email',
-            'phone',
-            'date_of_birth',
-            'home_address',
-            'emergency_contact_name',
-            'emergency_contact_phone',
-            'emergency_contact_relationship',
-          ].join(', ')
-        )
-        .single();
-
-      if (updateError) {
-        console.error('Profile update error:', updateError);
-        throw new Error('Failed to save profile. Please try again.');
-      }
-
-      /**
-       * Supabase JS client can infer `data` as a generic error type when no typed Database schema
-       * is provided to `createClient`. Narrow it locally to keep production builds type-safe.
-       */
-      type MobileUserRequiredFields = {
-        profile_completion_completed: boolean | null;
-        name: string | null;
-        email: string | null;
-        phone: string | null;
-        date_of_birth: string | null;
-        home_address: string | null;
-        emergency_contact_name: string | null;
-        emergency_contact_phone: string | null;
-        emergency_contact_relationship: string | null;
-      };
-      const updatedProfile = (updatedData as unknown as MobileUserRequiredFields | null) ?? null;
-
-      /**
-       * Mirror identity + completion status into Supabase user_metadata.
-       * This prevents a "profile completion loop" if mobile_users is temporarily unreadable (RLS/transient).
-       */
-      const updateAuthPayload: any = {
-        data: {
-          name: fullName.trim(),
-          profile_email: effectiveEmail,
-          profile_completion_completed: true,
-          ...(isNewUser ? { has_password: true } : {}),
-        },
-      };
-
-      if (isNewUser) {
-        updateAuthPayload.password = password.trim();
-      }
-
-      const { error: credentialError } = await supabase.auth.updateUser(updateAuthPayload);
-      if (credentialError) {
-        console.error('Auth metadata update error:', credentialError);
-        throw new Error(credentialError.message || 'Failed to finalize your account. Please try again.');
-      }
-
-      // Update auth.users.email via admin API so email+password login works.
-      // This replaces the synthetic phone_XXX@auth.deephorizon.app email with
-      // the user's real email entered above.
-      try {
-        const { data: sessionData } = await supabase.auth.getSession();
-        const accessToken = sessionData?.session?.access_token;
-        if (accessToken && effectiveEmail) {
-          const emailUpdateRes = await fetch(`${apiBaseUrl}/api/auth/update-profile-email`, {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${accessToken}`,
-            },
-            body: JSON.stringify({ email: effectiveEmail }),
-            signal: AbortSignal.timeout(8000),
-          });
-          if (!emailUpdateRes.ok) {
-            const errBody = await emailUpdateRes.json().catch(() => ({}));
-            // EMAIL_TAKEN is user-facing — surface it so they can use a different email
-            if (errBody?.code === 'EMAIL_TAKEN') {
-              throw new Error(errBody.error || 'This email is already in use by another account.');
-            }
-            // Other errors are non-fatal — profile is saved, login email just not updated
-            console.warn('[CompleteProfile] Auth email update failed (non-fatal):', errBody?.error || emailUpdateRes.status);
-          } else {
-            console.log('[CompleteProfile] Auth email updated successfully for email+password login');
-          }
-        }
-      } catch (emailUpdateError: any) {
-        // Re-throw EMAIL_TAKEN so the user sees it
-        if (emailUpdateError?.message?.includes('already in use') || emailUpdateError?.message?.includes('already associated')) {
-          throw emailUpdateError;
-        }
-        // Other errors are non-fatal
-        console.warn('[CompleteProfile] Auth email update error (non-fatal):', emailUpdateError?.message);
-      }
-
-      // Final safety check: ensure required fields are actually stored in DB.
-      const missingRequired =
-        updatedProfile?.profile_completion_completed !== true ||
-        !String(updatedProfile?.name ?? '').trim() ||
-        !String(updatedProfile?.email ?? '').trim() ||
-        !String(updatedProfile?.date_of_birth ?? '').trim() ||
-        !String(updatedProfile?.home_address ?? '').trim() ||
-        !String(updatedProfile?.emergency_contact_name ?? '').trim() ||
-        !String(updatedProfile?.emergency_contact_phone ?? '').trim() ||
-        !String(updatedProfile?.emergency_contact_relationship ?? '').trim();
-
-      if (missingRequired) {
-        console.error('[CompleteProfile] DB update succeeded but required fields are missing:', updatedProfile);
-        throw new Error('Profile was not saved correctly. Please try again.');
-      }
-
-      /**
-       * ✅ CRITICAL FIX: Use upsert for emergency contacts to prevent cascading failures
-       *
-       * OLD BEHAVIOR: Separate select → insert/update logic
-       * PROBLEM: If profile saves but contact fails, retry creates inconsistent state
-       *
-       * NEW BEHAVIOR: Single upsert operation with conflict handling
-       * BENEFIT: Idempotent - can be retried safely without duplicates or errors
-       */
-      const contactPayload = {
-        mobile_user_id: user.id,
-        contact_name: emergencyContactName.trim(),
-        contact_phone: emergencyPhoneE164,
-        relationship: emergencyContactRelation.trim(),
-        contact_email: emergencyContactEmail.trim() || null,
-      };
-
-      // First, try to find and delete old contacts for this user (keep only latest)
-      // This ensures we don't accumulate duplicate contacts over multiple profile completions
-      try {
-        const { data: oldContacts } = await supabase
-          .from(TABLES.EMERGENCY_CONTACTS)
-          .select('id')
-          .eq('mobile_user_id', user.id);
-
-        if (oldContacts && oldContacts.length > 0) {
-          console.log(`[CompleteProfile] Removing ${oldContacts.length} old emergency contact(s)`);
-          await supabase
-            .from(TABLES.EMERGENCY_CONTACTS)
-            .delete()
-            .eq('mobile_user_id', user.id);
-        }
-      } catch (cleanupError) {
-        // Non-fatal: if cleanup fails, upsert will still work
-        console.warn('[CompleteProfile] Old contact cleanup failed (non-fatal):', cleanupError);
-      }
-
-      // Insert fresh emergency contact
-      if (__DEV__) console.log('[CompleteProfile] Saving emergency contact for user:', user.id);
-      const { data: savedContact, error: contactError } = await supabase
-        .from(TABLES.EMERGENCY_CONTACTS)
-        .insert(contactPayload)
-        .select()
-        .single();
-
-      if (contactError) {
-        console.error('[CompleteProfile] Emergency contact save error:', contactError);
-        console.error('[CompleteProfile] Contact payload:', contactPayload);
-
-        // If error is due to duplicate/constraint, it's non-fatal (data is already in mobile_users)
-        // Only throw for unexpected errors
-        if (!contactError.message?.includes('duplicate') && contactError.code !== '23505') {
-          throw new Error('Failed to save emergency contact. Please try again.');
-        } else {
-          console.warn('[CompleteProfile] Duplicate contact detected, continuing (data already in profile)');
-        }
-      } else {
-        console.log('[CompleteProfile] Successfully saved emergency contact:', savedContact?.id);
-      }
-
-      Alert.alert(
-        'Profile Completed',
-        'Your profile has been saved successfully.',
-        [{ text: 'Continue', onPress: onComplete }]
-      );
-
-    } catch (error: any) {
-      console.error('Error completing profile:', error);
-      Alert.alert(
-        'Error',
-        error.message || 'Failed to save profile. Please try again.'
-      );
-    } finally {
-      setLoading(false);
+    if (!effectiveEmail) {
+      throw new Error('Email is required');
     }
-  };
+
+    const emergencyPhoneE164 = indianPhoneToE164(emergencyContactPhone);
+    if (!emergencyPhoneE164) {
+      throw new Error('Invalid emergency contact phone');
+    }
+
+    const userPhoneE164 = user.phone
+      ? user.phone
+      : indianPhoneToE164(phone);
+
+    if (!userPhoneE164) {
+      throw new Error('Phone number is required');
+    }
+
+    // 🔥 FINAL PAYLOAD (aligned with backend DTO)
+    const payload = {
+      name: fullName.trim(),
+      email: effectiveEmail,
+      dateOfBirth: dateOfBirth
+  ? dateOfBirth.toISOString().split('T')[0]
+  : undefined,
+
+      homeAddress: homeAddress.trim(),
+
+      workAddress: workAddress.trim() || undefined,
+
+      bloodGroup:
+        bloodGroup.trim() && bloodGroup !== 'None'
+          ? bloodGroup.trim()
+          : undefined,
+
+      allergies:
+        allergens.trim() && allergens !== 'None'
+          ? allergens.trim()
+          : undefined,
+
+      emergencyContact: emergencyContactName.trim(),
+      emergencyContactPhone: emergencyPhoneE164,
+      emergencyContactRelation: emergencyContactRelation.trim(),
+    };
+
+    await updateUserProfile(payload);
+
+    Alert.alert(
+      'Profile Completed',
+      'Your profile has been saved successfully.',
+      [{ text: 'Continue', onPress: onComplete }]
+    );
+  } catch (error: any) {
+    console.error('[CompleteProfile] Error:', JSON.stringify(error));
+    Alert.alert(
+      'Error',
+      error?.message || 'Failed to save profile. Please try again.'
+    );
+  } finally {
+    setLoading(false);
+  }
+};
 
   const formatDate = (date: Date | null): string => {
     if (!date) return 'Select Date of Birth';

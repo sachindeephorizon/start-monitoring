@@ -6,14 +6,14 @@
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import type { MobileUserProfile } from './profile.types';
+import type { MobileUserProfile, UserProfile } from './profile.types';
 
 const KEY_PREFIX = 'deephorizon.profile.cache.v1';
 
 type StoredProfileSnapshot = {
   userId: string;
   hydratedAt: number; // epoch ms
-  profile: MobileUserProfile | null;
+  profile: UserProfile | null;
 };
 
 function keyForUser(userId: string) {
@@ -35,7 +35,7 @@ export const ProfileStorage = {
 
       const storedUserId = parsed.userId;
       const hydratedAt = parsed.hydratedAt;
-      const profile = (parsed as any).profile as MobileUserProfile | null;
+      const profile = (parsed as any).profile as UserProfile | null;
 
       if (storedUserId !== userId) return null;
       if (typeof hydratedAt !== 'number' || !Number.isFinite(hydratedAt)) return null;
@@ -52,12 +52,12 @@ export const ProfileStorage = {
     }
   },
 
-  async get(userId: string): Promise<MobileUserProfile | null> {
+  async get(userId: string): Promise<UserProfile | null> {
     const snap = await this.getSnapshot(userId);
     return snap?.profile ?? null;
   },
 
-  async set(userId: string, profile: MobileUserProfile | null): Promise<void> {
+  async set(userId: string, profile: UserProfile | null): Promise<void> {
     const snapshot: StoredProfileSnapshot = {
       userId,
       hydratedAt: Date.now(),

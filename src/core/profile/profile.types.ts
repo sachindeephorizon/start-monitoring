@@ -43,3 +43,23 @@ export type MobileUserProfile = {
   updated_at: string | null;
 };
 
+
+
+export type UserProfile = {
+   id: string;
+    name?: string;
+    email?: string;
+    phone?: string;
+    dateOfBirth?: string;
+    homeAddress?: string;
+    homeAddressState?: string;
+    homeAddressCity?: string;
+    workAddress?: string;
+    workAddressState?: string;
+    workAddressCity?: string;
+    bloodGroup?: string;
+    allergies?: string;
+    isProfileComplete: boolean;
+    isPasskeySetupComplete: boolean;
+    emergencyPasskeyHash?: string;
+}
