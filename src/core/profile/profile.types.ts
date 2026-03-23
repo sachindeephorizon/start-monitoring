@@ -61,5 +61,5 @@ export type UserProfile = {
     allergies?: string;
     isProfileComplete: boolean;
     isPasskeySetupComplete: boolean;
-    emergencyPasskeyHash?: string;
+    emergencyPassKeyHash?: string;
 }

@@ -218,7 +218,7 @@ export function AuthScreen({
 
     setLoading(true);
     try {
-      const fullPhoneNumber = countryCode + phone;
+      const fullPhoneNumber = phone;
       if (__DEV__) console.log('Sending OTP via 2Factor API to:', fullPhoneNumber);
       
       // Call backend API to send OTP via 2Factor
@@ -629,7 +629,7 @@ export function AuthScreen({
   otpVerifyInFlightRef.current = true;
 
   try {
-    const fullPhoneNumber = countryCode + phone;
+    const fullPhoneNumber = phone;
 
     if (__DEV__) {
       console.log("Verifying OTP:", fullPhoneNumber);

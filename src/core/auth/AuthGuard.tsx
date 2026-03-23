@@ -107,8 +107,8 @@ export function AuthGuard({ children }: AuthGuardProps) {
 
       const needsPasskey =
         !profile.isPasskeySetupComplete ||
-        !profile.emergencyPasskeyHash ||
-        String(profile.emergencyPasskeyHash).trim() === '';
+        !profile.emergencyPassKeyHash ||
+        String(profile.emergencyPassKeyHash).trim() === '';
 
       if (needsProfile) {
         setShowCompleteProfile(true);
@@ -226,8 +226,8 @@ export function AuthGuard({ children }: AuthGuardProps) {
           if (refreshed) {
             const needsPasskey =
               !refreshed.isPasskeySetupComplete ||
-              !refreshed.emergencyPasskeyHash ||
-              String(refreshed.emergencyPasskeyHash).trim() === '';
+              !refreshed.emergencyPassKeyHash ||
+              String(refreshed.emergencyPassKeyHash).trim() === '';
 
             if (needsPasskey) {
               setShowPasskeySetup(true);
