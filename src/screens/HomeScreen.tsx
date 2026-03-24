@@ -229,40 +229,27 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     }, durationMs);
   }, [statusOpacity]);
 
+
+
+
   // Start call function (defined early so it can be used in emergency response)
   const startCall = useCallback(async (callType: 'video' | 'audio', reason: string) => {
     try {
       setIsStartingCall(true);
       setCallPriorityActive(true);
 
-      // ✅ CRITICAL FIX: Validate and refresh session if expired
-      // After app inactivity (2-3 hours), session expires and cached token is invalid
-      const { ensureValidSession, supabase } = await import('@/lib/supabase');
 
-      console.log('[HomeScreen] Checking session validity...');
-      const session = await ensureValidSession();
-
-      if (!session?.user) {
-        console.error('[HomeScreen] ❌ No session available for video call');
-        throw new Error('Session expired. Please restart the app.');
-      }
 
       // ensureValidSession() already refreshes expired tokens
-      const user = session.user;
+      const user = auth.user;
+
+      if(!user){
+        throw new Error('User not authenticated');
+      }
       if (__DEV__) console.log('[HomeScreen] ✅ Session valid, user ID:', user.id);
 
-      // Get user name
-      const { data: userProfile, error: profileError } = await supabase
-        .from('mobile_users')
-        .select('name')
-        .eq('id', user.id)
-        .single();
       
-      if (profileError) {
-        console.error('[HomeScreen] Error fetching user profile:', profileError);
-      }
-      
-      const userName = userProfile?.name || user.email || 'User';
+      const userName = user?.name || user.email || 'User';
       
       if (callType === 'audio') {
         // Use dedicated audio call service for audio calls
@@ -1084,7 +1071,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         </ScrollView>
         
         {/* Video Monitor Modal */}
-        {/* <VideoMonitorModal
+        <VideoMonitorModal
           visible={activeService === 'video' && !showCall}
           isMonitoring={isMonitoring && !showCall}
           cameraPermission={cameraPermission}
@@ -1098,7 +1085,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           onSetIsVideoEnabled={setIsVideoEnabled}
           onSetIsMonitoring={setIsMonitoring}
           onEndVideoSession={handleEndVideoSession}
-        /> */}
+        />
         
         {/* Location Tracking Modal */}
         <LocationTrackingModal

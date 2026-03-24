@@ -8,10 +8,8 @@
  */
 
 import { StreamVideoClient, User } from '@stream-io/video-react-native-sdk';
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { streamTokenUrl } from '@/config/environment';
 import { hasWebRTCNativeModule, loadStreamVideoSdk } from '@/lib/streamVideoSdkLoader';
-import { Platform } from 'react-native';
+import { callSessionTokenGenerate } from '@/api/call-sessions';
 
 class StreamVideoClientService {
   public client: StreamVideoClient | null = null; // Made public for wrapper access
@@ -78,7 +76,7 @@ class StreamVideoClientService {
     }
 
     // Generate token
-    const token = await this.generateToken(userId, userName || userId);
+    const token = await this.generateToken();
 
     // Create user object
     const user: User = {
@@ -95,7 +93,7 @@ class StreamVideoClientService {
   /**
    * Generate Stream.io token
    */
-  private async generateToken(userId: string, userName: string): Promise<string> {
+  private async generateToken(): Promise<string> {
     // Check cache
     if (this.cachedToken && Date.now() < this.tokenExpiryTime) {
       return this.cachedToken;
@@ -109,45 +107,11 @@ class StreamVideoClientService {
     // Fetch new token
     this.tokenInFlight = (async () => {
       try {
-        const session = await ensureValidSession();
-        if (!session?.access_token) {
-          throw new Error('No active session - cannot generate token');
-        }
+        
 
-        const sanitizedUserId = userId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_mobile';
-
-        const controller = new AbortController();
-        const fetchTimeout = setTimeout(() => controller.abort(), 10_000);
-        const response = await fetch(streamTokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            userId: sanitizedUserId,
-            userName: userName,
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(fetchTimeout);
-
-        if (!response.ok) {
-          throw new Error(`Token generation failed: ${response.statusText}`);
-        }
-
-        const raw = await response.json();
-        // API returns { success, data: { token, ... } } or { token } directly
-        const tokenData = raw.data || raw;
-        if (!tokenData.token) {
-          throw new Error('Invalid token response');
-        }
-
-        // Cache token (expires in 1 hour by default)
-        this.cachedToken = tokenData.token;
-        this.tokenExpiryTime = Date.now() + (tokenData.expires_in || 3600) * 1000;
-
-        return tokenData.token;
+        const token = await callSessionTokenGenerate();
+        console.log('[StreamVideoClient] Token generated successfully', token);
+        return token;
       } finally {
         this.tokenInFlight = null;
       }
@@ -182,7 +146,7 @@ class StreamVideoClientService {
    */
   async preFetchToken(userId: string, userName?: string): Promise<void> {
     try {
-      await this.generateToken(userId, userName || userId);
+      await this.generateToken();
     } catch (error) {
       console.warn('[StreamVideoClient] Token prefetch failed (non-critical):', error);
     }

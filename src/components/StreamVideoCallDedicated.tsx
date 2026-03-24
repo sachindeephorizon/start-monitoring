@@ -20,15 +20,13 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { streamVideoServiceDedicated } from '@/services/streamVideoServiceDedicated';
 import { backgroundCallNotificationService } from '@/services/backgroundCallNotification.service';
-import { formatDuration } from '@/utils/time';
 import { Camera } from 'expo-camera';
 import * as DeviceInfo from 'expo-device';
 import { MediaRecovery } from '@/services/mediaRecovery';
 import { useInCallAudio } from '@/hooks/useInCallAudio';
-import { supabase, ensureValidSession } from '@/lib/supabase';
 import { logger } from '@/utils/logger';
 import { runInteractionTask, iosImmediateInteractionOptions } from '@/utils/interactionGuard';
-import { getCachedUser } from '@/services/sessionCache';
+import { useAuth } from '@/core/auth';
 
 interface StreamVideoCallDedicatedProps {
   callId: string;
@@ -579,18 +577,18 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
     }
   };
 
+
+  const auth = useAuth();
+
   const getAuthUserFast = useCallback(async () => {
-    // Prefer in-memory cached session user first (instant), then local session, then network fallback.
-    const cached = getCachedUser();
-    if (cached) return cached;
 
-    try {
-      const session = await ensureValidSession();
-      if (session?.user) return session.user;
-    } catch { }
+    if(!auth.user) {
+      throw new Error('User not authenticated');
+    }
 
-    // Session fallback failed - no valid user
-    throw new Error('Not authenticated - cannot start video call');
+
+    return auth.user;
+   
   }, []);
 
   const initializeAndJoinVideoCall = async () => {

@@ -9,14 +9,11 @@ import {
   Linking,
   ActivityIndicator,
 } from 'react-native';
-import { supabase, ensureValidSession } from '@/lib/supabase';
 import { MaterialIcons } from '@expo/vector-icons';
 import ServiceModal from '@/components/common/ServiceModal';
 import { styles } from './VideoMonitorModal.styles';
 import { Camera } from 'expo-camera';
 import { useNavigation } from '@react-navigation/native';
-import { streamVideoServiceDedicated } from '@/services/streamVideoServiceDedicated';
-import { isCallPriorityActive } from '@/services/callPriority';
 
 interface VideoMonitorModalProps {
   visible: boolean;
@@ -98,98 +95,41 @@ const VideoMonitorModal: React.FC<VideoMonitorModalProps> = memo(({
 
   // 🔥 CRITICAL iOS FIX: Check subscription access immediately - NO setTimeout
   // setTimeout can cause iOS JS thread suspension
-  useEffect(() => {
-    if (visible) {
-      // iOS: Run immediately, Android: can use small delay
-      if (Platform.OS === 'ios') {
-        // Run immediately on iOS
-          import('@/utils/subscriptionAccess').then(({ checkSubscriptionAccess }) => {
-          checkSubscriptionAccess('Video Monitor').then((hasAccess) => {
-            if (!hasAccess) {
-              // Close modal - checkSubscriptionAccess will handle navigation to TrialExpired screen
-              onClose();
-            }
-          }).catch(() => {
-            // On error, allow modal to stay open
-          });
-        }).catch(() => {
-          // If import fails, allow modal to stay open
-        });
-      } else {
-        // Android: Small delay for smoothness
-        const accessCheckTimer = setTimeout(() => {
-          import('@/utils/subscriptionAccess').then(({ checkSubscriptionAccess }) => {
-            checkSubscriptionAccess('Video Monitor').then((hasAccess) => {
-              if (!hasAccess) {
-                // Close modal - checkSubscriptionAccess will handle navigation to TrialExpired screen
-                onClose();
-              }
-            }).catch(() => {});
-          }).catch(() => {});
-        }, 100);
+  // useEffect(() => {
+  //   if (visible) {
+  //     // iOS: Run immediately, Android: can use small delay
+  //     if (Platform.OS === 'ios') {
+  //       // Run immediately on iOS
+  //         import('@/utils/subscriptionAccess').then(({ checkSubscriptionAccess }) => {
+  //         checkSubscriptionAccess('Video Monitor').then((hasAccess) => {
+  //           if (!hasAccess) {
+  //             // Close modal - checkSubscriptionAccess will handle navigation to TrialExpired screen
+  //             onClose();
+  //           }
+  //         }).catch(() => {
+  //           // On error, allow modal to stay open
+  //         });
+  //       }).catch(() => {
+  //         // If import fails, allow modal to stay open
+  //       });
+  //     } else {
+  //       // Android: Small delay for smoothness
+  //       const accessCheckTimer = setTimeout(() => {
+  //         import('@/utils/subscriptionAccess').then(({ checkSubscriptionAccess }) => {
+  //           checkSubscriptionAccess('Video Monitor').then((hasAccess) => {
+  //             if (!hasAccess) {
+  //               // Close modal - checkSubscriptionAccess will handle navigation to TrialExpired screen
+  //               onClose();
+  //             }
+  //           }).catch(() => {});
+  //         }).catch(() => {});
+  //       }, 100);
 
-      return () => clearTimeout(accessCheckTimer);
-      }
-    }
-  }, [visible, onClose, navigation]);
+  //     return () => clearTimeout(accessCheckTimer);
+  //     }
+  //   }
+  // }, [visible, onClose, navigation]);
 
-  // 🔥 FIX: Defer Stream SDK prewarm to not block modal opening
-  // Stream client is already preloaded in InitCoordinator, but we verify it's ready
-  // Use setTimeout to defer this verification AFTER modal is visible
-  useEffect(() => {
-    if (visible) {
-      // Never compete with call start/active; token/connect/join must win on iOS.
-      if (isCallPriorityActive()) {
-        return;
-      }
-      // iOS-only: avoid setTimeout deferral (can behave poorly under iOS JS scheduling)
-      // Android keeps the small delay.
-      let cancelled = false;
-      if (Platform.OS === 'ios') {
-        Promise.resolve()
-          .then(() => {
-            if (cancelled) return;
-            return ensureValidSession();
-          })
-          .then((sess: any) => {
-            const user = sess?.user;
-            if (cancelled) return;
-            if (user) {
-              const userId = user.id;
-              const userName = user.user_metadata?.full_name || user.user_metadata?.name || user.email || 'Mobile User';
-              // Token-only warmup (shared cache with call flow). Avoids full connectUser contention on iOS.
-              return streamVideoServiceDedicated.preFetchToken(userId, userName).catch((error) => {
-                if (__DEV__) console.warn('[VideoMonitorModal] Token prefetch failed (non-critical):', error);
-              });
-            }
-          })
-          .catch(() => {
-            // Non-critical
-          });
-        return () => {
-          cancelled = true;
-        };
-      }
-
-      // Android: Defer SDK verification to AFTER modal is rendered (non-blocking)
-      const prewarmTimer = setTimeout(() => {
-        if (isCallPriorityActive()) return;
-        ensureValidSession().then((sess: any) => { const user = sess?.user;
-          if (user) {
-            const userId = user.id;
-            const userName = user.user_metadata?.full_name || user.user_metadata?.name || user.email || 'Mobile User';
-            streamVideoServiceDedicated.preFetchToken(userId, userName).catch((error) => {
-              if (__DEV__) console.warn('[VideoMonitorModal] Token prefetch failed (non-critical):', error);
-            });
-          }
-        }).catch(() => {
-          // Non-critical
-        });
-      }, 50);
-
-      return () => clearTimeout(prewarmTimer);
-    }
-  }, [visible]);
 
   // Handle permission requests asynchronously after modal opens
   const handleRequestPermissions = async () => {
