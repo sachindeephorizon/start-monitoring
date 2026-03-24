@@ -4,9 +4,8 @@
  * Basic call management with database integration.
  * Adapted from old app for new app architecture.
  */
-
-import { supabase, ensureValidSession } from '@/lib/supabase';
 import { VideoCallService } from '@/features/video/video.service';
+import { useAuth } from '@/core/auth';
 
 export interface SimpleCallSession {
   id: string;
@@ -47,24 +46,7 @@ class SimpleCallService {
     options?: { sessionId?: string; roomCode?: string; userId?: string }
   ): Promise<SimpleCallSession> {
     const sessionId = options?.sessionId || this.generateUUID();
-
-    // Get current user (with session validation)
-    const authSession = await ensureValidSession();
-    const user = authSession?.user;
-    if (!user) {
-      throw new Error('No authenticated user');
-    }
-
-    const userId = options?.userId || user.id;
-
-    // Get user profile for name
-    const { data: userProfile } = await supabase
-      .from('mobile_users')
-      .select('name')
-      .eq('id', userId)
-      .single();
-
-    const userName = config.userName || userProfile?.name || user.email || 'User';
+    const userName = 'User';
 
     // Create call session using VideoCallService
     const result = await VideoCallService.createCallSession(
