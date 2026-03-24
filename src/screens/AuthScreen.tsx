@@ -28,6 +28,9 @@ import { useAuth } from '@/core/auth';
 import { ProfileStorage } from '@/core/profile/profile.storage';
 import OptimizedImage from '@/components/optimized/OptimizedImage';
 import PoliciesScreen from './PoliciesScreen';
+import { loginSendOtp, verifyOtp } from '@/api/auth';
+import { handleApiError } from '@/api/errorHanlder';
+import { setApiSession } from '@/session/session';
 
 interface AuthScreenProps {
   onShowOnboarding?: () => void;
@@ -84,6 +87,119 @@ export function AuthScreen({
   }, []);
 
   // Send OTP function using 2Factor API
+  // const handleSendOTP = async () => {
+  //   if (!phone || phone.trim().length === 0) {
+  //     Alert.alert('Error', 'Please enter your phone number');
+  //     return;
+  //   }
+
+  //   if (phone.trim().length !== 10) {
+  //     Alert.alert('Error', 'Phone number must be exactly 10 digits');
+  //     return;
+  //   }
+
+  //   if (!/^\d{10}$/.test(phone.trim())) {
+  //     Alert.alert('Error', 'Phone number must contain only digits');
+  //     return;
+  //   }
+
+  //   setLoading(true);
+  //   try {
+  //     const fullPhoneNumber = countryCode + phone;
+  //     if (__DEV__) console.log('Sending OTP via 2Factor API to:', fullPhoneNumber);
+  //     if (__DEV__) console.log('API Base URL:', apiBaseUrl);
+      
+  //     // Call backend API to send OTP via 2Factor
+  //     // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
+  //     let response: Response;
+  //     let data: any;
+  //     const sendController = new AbortController();
+  //     const sendTimer = setTimeout(() => sendController.abort(), 15000);
+
+  //     try {
+  //       response = await fetch(`${apiBaseUrl}/api/auth/send-otp`, {
+  //         method: 'POST',
+  //         headers: {
+  //           'Content-Type': 'application/json',
+  //         },
+  //         body: JSON.stringify({ phone: fullPhoneNumber }),
+  //         signal: sendController.signal,
+  //       });
+        
+  //       // Check if response is ok before trying to parse JSON
+  //       if (!response.ok) {
+  //         const errorText = await response.text();
+  //         console.error('OTP API error response:', response.status, errorText);
+  //         try {
+  //           data = JSON.parse(errorText);
+  //         } catch {
+  //           throw new Error(`Server error: ${response.status} - ${errorText}`);
+  //         }
+  //         throw new Error(data.error || data.message || `Failed to send OTP: ${response.status}`);
+  //       }
+        
+  //       data = await response.json();
+  //       if (__DEV__) console.log('OTP API response:', data);
+  //     } catch (fetchError: any) {
+  //       // Network errors (connection failed, timeout, etc.)
+  //       if (fetchError?.name === 'AbortError') {
+  //         throw new Error('Request timed out. Please check your internet connection and try again.');
+  //       }
+  //       if (fetchError.message?.includes('Network request failed') ||
+  //           fetchError.message?.includes('Failed to fetch') ||
+  //           fetchError.name === 'TypeError') {
+  //         console.error('Network error - check API URL and connectivity:', fetchError);
+  //         throw new Error('Network error: Please check your internet connection and try again. If the problem persists, the server may be unavailable.');
+  //       }
+  //       throw fetchError;
+  //     } finally {
+  //       clearTimeout(sendTimer);
+  //     }
+
+  //     // API returns { success, data: { status, sessionId, ... } }
+  //     const responseData = data.data || data;
+
+  //     if (!data.success && responseData.status !== 'OTP_SENT') {
+  //       throw new Error(responseData.error || 'Failed to send OTP');
+  //     }
+
+  //     // Store session ID for OTP verification
+  //     setOtpSessionId(responseData.sessionId || responseData.details);
+  //     setOtpSent(true);
+  //     setOtpTimer(60); // 60 second timer
+      
+  //     // Start countdown timer — store in ref for unmount cleanup
+  //     if (otpTimerRef.current) clearInterval(otpTimerRef.current);
+  //     otpTimerRef.current = setInterval(() => {
+  //       setOtpTimer((prev) => {
+  //         if (prev <= 1) {
+  //           if (otpTimerRef.current) {
+  //             clearInterval(otpTimerRef.current);
+  //             otpTimerRef.current = null;
+  //           }
+  //           return 0;
+  //         }
+  //         return prev - 1;
+  //       });
+  //     }, 1000);
+
+  //     Alert.alert('OTP Sent!', `We've sent a verification code to ${fullPhoneNumber}`);
+  //   } catch (error: any) {
+  //     console.error('OTP send error:', error);
+  //     let errorMessage = 'Failed to send OTP. Please try again.';
+      
+  //     if (error.message?.includes('rate limit')) {
+  //       errorMessage = 'Too many requests. Please wait a moment and try again.';
+  //     } else if (error.message) {
+  //       errorMessage = error.message;
+  //     }
+      
+  //     Alert.alert('Error', errorMessage);
+  //   } finally {
+  //     if (mountedRef.current) setLoading(false);
+  //   }
+  // };
+
   const handleSendOTP = async () => {
     if (!phone || phone.trim().length === 0) {
       Alert.alert('Error', 'Please enter your phone number');
@@ -102,66 +218,19 @@ export function AuthScreen({
 
     setLoading(true);
     try {
-      const fullPhoneNumber = countryCode + phone;
+      const fullPhoneNumber = phone;
       if (__DEV__) console.log('Sending OTP via 2Factor API to:', fullPhoneNumber);
-      if (__DEV__) console.log('API Base URL:', apiBaseUrl);
       
       // Call backend API to send OTP via 2Factor
       // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
-      let response: Response;
       let data: any;
       const sendController = new AbortController();
       const sendTimer = setTimeout(() => sendController.abort(), 15000);
 
-      try {
-        response = await fetch(`${apiBaseUrl}/api/auth/send-otp`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ phone: fullPhoneNumber }),
-          signal: sendController.signal,
-        });
-        
-        // Check if response is ok before trying to parse JSON
-        if (!response.ok) {
-          const errorText = await response.text();
-          console.error('OTP API error response:', response.status, errorText);
-          try {
-            data = JSON.parse(errorText);
-          } catch {
-            throw new Error(`Server error: ${response.status} - ${errorText}`);
-          }
-          throw new Error(data.error || data.message || `Failed to send OTP: ${response.status}`);
-        }
-        
-        data = await response.json();
-        if (__DEV__) console.log('OTP API response:', data);
-      } catch (fetchError: any) {
-        // Network errors (connection failed, timeout, etc.)
-        if (fetchError?.name === 'AbortError') {
-          throw new Error('Request timed out. Please check your internet connection and try again.');
-        }
-        if (fetchError.message?.includes('Network request failed') ||
-            fetchError.message?.includes('Failed to fetch') ||
-            fetchError.name === 'TypeError') {
-          console.error('Network error - check API URL and connectivity:', fetchError);
-          throw new Error('Network error: Please check your internet connection and try again. If the problem persists, the server may be unavailable.');
-        }
-        throw fetchError;
-      } finally {
-        clearTimeout(sendTimer);
-      }
+      const response = await loginSendOtp(fullPhoneNumber);
+         
+      if (__DEV__) console.log('OTP API response:', response.message);
 
-      // API returns { success, data: { status, sessionId, ... } }
-      const responseData = data.data || data;
-
-      if (!data.success && responseData.status !== 'OTP_SENT') {
-        throw new Error(responseData.error || 'Failed to send OTP');
-      }
-
-      // Store session ID for OTP verification
-      setOtpSessionId(responseData.sessionId || responseData.details);
       setOtpSent(true);
       setOtpTimer(60); // 60 second timer
       
@@ -181,372 +250,444 @@ export function AuthScreen({
       }, 1000);
 
       Alert.alert('OTP Sent!', `We've sent a verification code to ${fullPhoneNumber}`);
+      clearTimeout(sendTimer);
     } catch (error: any) {
-      console.error('OTP send error:', error);
-      let errorMessage = 'Failed to send OTP. Please try again.';
-      
-      if (error.message?.includes('rate limit')) {
-        errorMessage = 'Too many requests. Please wait a moment and try again.';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-      
-      Alert.alert('Error', errorMessage);
+      handleApiError(error, { showAlert: true });
+      setLoading(false);
     } finally {
       if (mountedRef.current) setLoading(false);
     }
+    
   };
 
   // Verify OTP function using 2Factor API
-  const handleVerifyOTP = async () => {
-    if (otpVerifyInFlightRef.current) {
-      return;
-    }
+  // const handleVerifyOTP = async () => {
+  //   if (otpVerifyInFlightRef.current) {
+  //     return;
+  //   }
 
-    if (!otpCode || otpCode.trim().length === 0) {
-      Alert.alert('Error', 'Please enter the OTP code');
-      return;
-    }
+  //   if (!otpCode || otpCode.trim().length === 0) {
+  //     Alert.alert('Error', 'Please enter the OTP code');
+  //     return;
+  //   }
 
-    if (otpCode.trim().length !== 6) {
-      Alert.alert('Error', 'OTP must be 6 digits');
-      return;
-    }
+  //   if (otpCode.trim().length !== 6) {
+  //     Alert.alert('Error', 'OTP must be 6 digits');
+  //     return;
+  //   }
 
-    if (!otpSessionId) {
-      Alert.alert('Error', 'Session expired. Please request a new OTP.');
-      return;
-    }
+  //   if (!otpSessionId) {
+  //     Alert.alert('Error', 'Session expired. Please request a new OTP.');
+  //     return;
+  //   }
 
-    setLoading(true);
-    otpVerifyInFlightRef.current = true;
-    try {
-      const fullPhoneNumber = countryCode + phone;
-      if (__DEV__) console.log('Verifying OTP via 2Factor API for:', fullPhoneNumber);
+  //   setLoading(true);
+  //   otpVerifyInFlightRef.current = true;
+  //   try {
+  //     const fullPhoneNumber = countryCode + phone;
+  //     if (__DEV__) console.log('Verifying OTP via 2Factor API for:', fullPhoneNumber);
       
-      // Call backend API to verify OTP via 2Factor
-      // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
-      const verifyController = new AbortController();
-      const verifyTimer = setTimeout(() => verifyController.abort(), 15000);
+  //     // Call backend API to verify OTP via 2Factor
+  //     // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
+  //     const verifyController = new AbortController();
+  //     const verifyTimer = setTimeout(() => verifyController.abort(), 15000);
 
-      let verifyResponse: Response;
-      try {
-        verifyResponse = await fetch(`${apiBaseUrl}/api/auth/verify-otp`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            phone: fullPhoneNumber,
-            otp: otpCode.trim(),
-            sessionId: otpSessionId,
-          }),
-          signal: verifyController.signal,
-        });
-      } finally {
-        clearTimeout(verifyTimer);
-      }
+  //     let verifyResponse: Response;
+  //     try {
+  //       verifyResponse = await fetch(`${apiBaseUrl}/api/auth/verify-otp`, {
+  //         method: 'POST',
+  //         headers: {
+  //           'Content-Type': 'application/json',
+  //         },
+  //         body: JSON.stringify({
+  //           phone: fullPhoneNumber,
+  //           otp: otpCode.trim(),
+  //           sessionId: otpSessionId,
+  //         }),
+  //         signal: verifyController.signal,
+  //       });
+  //     } finally {
+  //       clearTimeout(verifyTimer);
+  //     }
 
-      const verifyRaw = await verifyResponse.json();
-      // API returns { success, data: { status, user, ... } }
-      const verifyData = verifyRaw.data || verifyRaw;
+  //     const verifyRaw = await verifyResponse.json();
+  //     // API returns { success, data: { status, user, ... } }
+  //     const verifyData = verifyRaw.data || verifyRaw;
 
-      if (!verifyResponse.ok || (!verifyRaw.success && verifyData.status !== 'VERIFIED')) {
-        throw new Error(verifyData.error || 'OTP verification failed');
-      }
+  //     if (!verifyResponse.ok || (!verifyRaw.success && verifyData.status !== 'VERIFIED')) {
+  //       throw new Error(verifyData.error || 'OTP verification failed');
+  //     }
 
-      if (!verifyData.user?.id) {
-        throw new Error('Server returned invalid user data. Please try again.');
-      }
+  //     if (!verifyData.user?.id) {
+  //       throw new Error('Server returned invalid user data. Please try again.');
+  //     }
 
-      // ticketId binds session creation to this OTP verification (one-time use, 120s TTL)
-      const ticketId = verifyData.ticketId;
-      if (!ticketId) {
-        throw new Error('Server returned invalid verification data. Please try again.');
-      }
+  //     // ticketId binds session creation to this OTP verification (one-time use, 120s TTL)
+  //     const ticketId = verifyData.ticketId;
+  //     if (!ticketId) {
+  //       throw new Error('Server returned invalid verification data. Please try again.');
+  //     }
 
-      if (__DEV__) console.log('[OTP Step 1/5] OTP verified, user:', verifyData.user.id, 'ticket:', ticketId);
+  //     if (__DEV__) console.log('[OTP Step 1/5] OTP verified, user:', verifyData.user.id, 'ticket:', ticketId);
 
-      // Now create a real Supabase session via ticket exchange
-      // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
-      const sessionController = new AbortController();
-      const sessionTimer = setTimeout(() => sessionController.abort(), 15000);
+  //     // Now create a real Supabase session via ticket exchange
+  //     // CRITICAL: iOS fetch() has no default timeout — add AbortController to prevent hang
+  //     const sessionController = new AbortController();
+  //     const sessionTimer = setTimeout(() => sessionController.abort(), 15000);
 
-      let sessionResponse: Response;
-      try {
-        sessionResponse = await fetch(`${apiBaseUrl}/api/auth/create-session`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({ ticketId }),
-          signal: sessionController.signal,
-        });
-      } finally {
-        clearTimeout(sessionTimer);
-      }
+  //     let sessionResponse: Response;
+  //     try {
+  //       sessionResponse = await fetch(`${apiBaseUrl}/api/auth/create-session`, {
+  //         method: 'POST',
+  //         headers: {
+  //           'Content-Type': 'application/json',
+  //         },
+  //         body: JSON.stringify({ ticketId }),
+  //         signal: sessionController.signal,
+  //       });
+  //     } finally {
+  //       clearTimeout(sessionTimer);
+  //     }
 
-      const sessionRaw = await sessionResponse.json();
-      // API returns { success, data: { status, session, ... } }
-      const sessionData = sessionRaw.data || sessionRaw;
+  //     const sessionRaw = await sessionResponse.json();
+  //     // API returns { success, data: { status, session, ... } }
+  //     const sessionData = sessionRaw.data || sessionRaw;
 
-      if (!sessionResponse.ok || (!sessionRaw.success && sessionData.status !== 'SUCCESS')) {
-        throw new Error(sessionData.error || 'Failed to create session');
-      }
+  //     if (!sessionResponse.ok || (!sessionRaw.success && sessionData.status !== 'SUCCESS')) {
+  //       throw new Error(sessionData.error || 'Failed to create session');
+  //     }
 
-      if (!sessionData.session?.access_token || !sessionData.session?.refresh_token) {
-        throw new Error('Server returned invalid session tokens. Please try again.');
-      }
+  //     if (!sessionData.session?.access_token || !sessionData.session?.refresh_token) {
+  //       throw new Error('Server returned invalid session tokens. Please try again.');
+  //     }
 
-      // ── Dev-only TTL diagnostic ──
-      // Log the actual token lifetime returned by /api/auth/create-session
-      // to verify backend session TTL matches Supabase Dashboard config.
-      // Expected: ~604800s (7 days). If ~3600s, backend is issuing 1-hour tokens.
-      if (__DEV__) {
-        try {
-          const parts = sessionData.session.access_token.split('.');
-          if (parts.length === 3) {
-            const payload = JSON.parse(atob(parts[1]));
-            const nowSec = Math.floor(Date.now() / 1000);
-            const ttl = typeof payload.exp === 'number' ? payload.exp - nowSec : 'N/A';
-            console.log(`[AuthScreen] create-session TTL: exp=${payload.exp}, now=${nowSec}, remaining=${ttl}s`);
-          }
-        } catch {}
-      }
+  //     // ── Dev-only TTL diagnostic ──
+  //     // Log the actual token lifetime returned by /api/auth/create-session
+  //     // to verify backend session TTL matches Supabase Dashboard config.
+  //     // Expected: ~604800s (7 days). If ~3600s, backend is issuing 1-hour tokens.
+  //     if (__DEV__) {
+  //       try {
+  //         const parts = sessionData.session.access_token.split('.');
+  //         if (parts.length === 3) {
+  //           const payload = JSON.parse(atob(parts[1]));
+  //           const nowSec = Math.floor(Date.now() / 1000);
+  //           const ttl = typeof payload.exp === 'number' ? payload.exp - nowSec : 'N/A';
+  //           console.log(`[AuthScreen] create-session TTL: exp=${payload.exp}, now=${nowSec}, remaining=${ttl}s`);
+  //         }
+  //       } catch {}
+  //     }
 
-      // ── PRE-CACHE: profile from create-session for instant hydration ────
-      // The dashboard API returns the mobile_users profile alongside session tokens.
-      // Caching it HERE means hydrateProfile() (called by completeLogin) finds it
-      // instantly in ProfileStorage — zero additional Supabase calls, zero timeouts.
-      const serverProfile = sessionData.profile ?? null;
-      if (serverProfile && serverProfile.id) {
-        try {
-          await ProfileStorage.set(serverProfile.id, serverProfile);
-          if (__DEV__) console.log('[OTP] Pre-cached profile from create-session response');
-        } catch (cacheErr: any) {
-          console.warn('[OTP] Failed to pre-cache profile (non-fatal):', cacheErr?.message);
-        }
-      }
+  //     // ── PRE-CACHE: profile from create-session for instant hydration ────
+  //     // The dashboard API returns the mobile_users profile alongside session tokens.
+  //     // Caching it HERE means hydrateProfile() (called by completeLogin) finds it
+  //     // instantly in ProfileStorage — zero additional Supabase calls, zero timeouts.
+  //     const serverProfile = sessionData.profile ?? null;
+  //     if (serverProfile && serverProfile.id) {
+  //       try {
+  //         await ProfileStorage.set(serverProfile.id, serverProfile);
+  //         if (__DEV__) console.log('[OTP] Pre-cached profile from create-session response');
+  //       } catch (cacheErr: any) {
+  //         console.warn('[OTP] Failed to pre-cache profile (non-fatal):', cacheErr?.message);
+  //       }
+  //     }
 
-      // ── EFFICIENT POST-OTP FLOW ──────────────────────────────────────────
-      // Key insight: supabase.from() internally calls getSession() which acquires
-      // the SDK's auth lock. If setSession() holds that lock (common on iOS),
-      // ALL subsequent SDK calls hang — no timeout/abort can fix it.
-      //
-      // Solution: fire setSession() in background, use raw REST API (fetch) for
-      // DB operations. Zero lock contention, zero hangs.
-      // ─────────────────────────────────────────────────────────────────────
+  //     // ── EFFICIENT POST-OTP FLOW ──────────────────────────────────────────
+  //     // Key insight: supabase.from() internally calls getSession() which acquires
+  //     // the SDK's auth lock. If setSession() holds that lock (common on iOS),
+  //     // ALL subsequent SDK calls hang — no timeout/abort can fix it.
+  //     //
+  //     // Solution: fire setSession() in background, use raw REST API (fetch) for
+  //     // DB operations. Zero lock contention, zero hangs.
+  //     // ─────────────────────────────────────────────────────────────────────
 
-      const loginUserId = verifyData.user.id;
-      const accessToken = sessionData.session.access_token;
-      const refreshToken = sessionData.session.refresh_token;
-      const restUrl = `${supabaseUrl}/rest/v1`;
-      const restHeaders = {
-        'apikey': supabaseAnonKey,
-        'Authorization': `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      };
+  //     const loginUserId = verifyData.user.id;
+  //     const accessToken = sessionData.session.access_token;
+  //     const refreshToken = sessionData.session.refresh_token;
+  //     const restUrl = `${supabaseUrl}/rest/v1`;
+  //     const restHeaders = {
+  //       'apikey': supabaseAnonKey,
+  //       'Authorization': `Bearer ${accessToken}`,
+  //       'Content-Type': 'application/json',
+  //     };
 
-      const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10_000) => {
-        const controller = new AbortController();
-        const timer = setTimeout(() => controller.abort(), timeoutMs);
-        try {
-          return await fetch(url, { ...options, signal: controller.signal });
-        } finally {
-          clearTimeout(timer);
-        }
-      };
+  //     const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10_000) => {
+  //       const controller = new AbortController();
+  //       const timer = setTimeout(() => controller.abort(), timeoutMs);
+  //       try {
+  //         return await fetch(url, { ...options, signal: controller.signal });
+  //       } finally {
+  //         clearTimeout(timer);
+  //       }
+  //     };
 
-      // Step 2: Fire setSession in background — don't await, don't block
-      // It will eventually complete and fire SIGNED_IN, updating React state.
-      // completeLogin sets user/session from tokens immediately (no waiting).
-      // beginSdkSync() signals services to wait until setSession completes
-      // so ensureValidSession() doesn't race against the SDK lock.
-      console.log('[OTP Step 2/4] Setting Supabase session (background)...');
-      beginSdkSync();
-      void (async () => {
-        let synced = false;
-        try {
-          const result = await Promise.race([
-            supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken }),
-            new Promise<null>((resolve) => setTimeout(() => {
-              console.warn('[OTP] setSession timed out (10s)');
-              resolve(null);
-            }, 10_000)),
-          ]);
-          if (!result) {
-            console.warn('[OTP] setSession hung — SDK may not have session yet');
-          } else if (result.error) {
-            console.error('[OTP] setSession error:', result.error.message);
-          } else {
-            console.log('[OTP] setSession completed in background');
-            synced = true;
-          }
-        } catch (err) {
-          console.error('[OTP] setSession threw:', err);
-        } finally {
-          completeSdkSync(synced);
-        }
-      })();
+  //     // Step 2: Fire setSession in background — don't await, don't block
+  //     // It will eventually complete and fire SIGNED_IN, updating React state.
+  //     // completeLogin sets user/session from tokens immediately (no waiting).
+  //     // beginSdkSync() signals services to wait until setSession completes
+  //     // so ensureValidSession() doesn't race against the SDK lock.
+  //     console.log('[OTP Step 2/4] Setting Supabase session (background)...');
+  //     beginSdkSync();
+  //     void (async () => {
+  //       let synced = false;
+  //       try {
+  //         const result = await Promise.race([
+  //           supabase.auth.setSession({ access_token: accessToken, refresh_token: refreshToken }),
+  //           new Promise<null>((resolve) => setTimeout(() => {
+  //             console.warn('[OTP] setSession timed out (10s)');
+  //             resolve(null);
+  //           }, 10_000)),
+  //         ]);
+  //         if (!result) {
+  //           console.warn('[OTP] setSession hung — SDK may not have session yet');
+  //         } else if (result.error) {
+  //           console.error('[OTP] setSession error:', result.error.message);
+  //         } else {
+  //           console.log('[OTP] setSession completed in background');
+  //           synced = true;
+  //         }
+  //       } catch (err) {
+  //         console.error('[OTP] setSession threw:', err);
+  //       } finally {
+  //         completeSdkSync(synced);
+  //       }
+  //     })();
 
-      // Step 3: Trigger hydration FIRST so login never blocks on REST profile writes.
-      console.log('[OTP Step 3/4] Calling completeLogin...');
-      await Promise.race([
-        auth.completeLogin(loginUserId, { access_token: accessToken, refresh_token: refreshToken }),
-        new Promise<never>((_, reject) =>
-          setTimeout(() => reject(new Error('Login finalization timed out. Please try again.')), 20_000)
-        ),
-      ]);
+  //     // Step 3: Trigger hydration FIRST so login never blocks on REST profile writes.
+  //     console.log('[OTP Step 3/4] Calling completeLogin...');
+  //     await Promise.race([
+  //       auth.completeLogin(loginUserId, { access_token: accessToken, refresh_token: refreshToken }),
+  //       new Promise<never>((_, reject) =>
+  //         setTimeout(() => reject(new Error('Login finalization timed out. Please try again.')), 20_000)
+  //       ),
+  //     ]);
 
-      // Step 4: Best-effort profile/cache sync in background (non-blocking).
-      // Tries direct Supabase REST first (fast when reachable), falls back to
-      // dashboard API proxy when Supabase is unreachable from the device.
-      console.log('[OTP Step 4/4] Scheduling profile sync in background...');
-      void (async () => {
-        let directSucceeded = false;
-        let existingProfile: any = null;
+  //     // Step 4: Best-effort profile/cache sync in background (non-blocking).
+  //     // Tries direct Supabase REST first (fast when reachable), falls back to
+  //     // dashboard API proxy when Supabase is unreachable from the device.
+  //     console.log('[OTP Step 4/4] Scheduling profile sync in background...');
+  //     void (async () => {
+  //       let directSucceeded = false;
+  //       let existingProfile: any = null;
 
-        // ── Attempt 1: Direct Supabase REST (fast path when reachable) ──
-        try {
-          const selectRes = await fetchWithTimeout(
-            `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}&select=id,trial_start_date,created_at`,
-            { headers: restHeaders },
-            8_000
-          );
-          const rows = selectRes.ok ? await selectRes.json() : [];
-          existingProfile = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
+  //       // ── Attempt 1: Direct Supabase REST (fast path when reachable) ──
+  //       try {
+  //         const selectRes = await fetchWithTimeout(
+  //           `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}&select=id,trial_start_date,created_at`,
+  //           { headers: restHeaders },
+  //           8_000
+  //         );
+  //         const rows = selectRes.ok ? await selectRes.json() : [];
+  //         existingProfile = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
 
-          if (existingProfile) {
-            const updateData: any = {
-              phone: fullPhoneNumber,
-              is_verified: true,
-              safety_companion_acknowledged: safetyCompanionAcknowledged,
-            };
-            if (!existingProfile.trial_start_date) {
-              updateData.trial_start_date = new Date().toISOString();
-            }
-            const patchRes = await fetchWithTimeout(
-              `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}`,
-              { method: 'PATCH', headers: restHeaders, body: JSON.stringify(updateData) },
-              8_000
-            );
-            if (patchRes.ok) {
-              console.log('[OTP] Direct profile update succeeded');
-              directSucceeded = true;
-            } else {
-              console.error('Profile update error:', await patchRes.text());
-            }
-          } else {
-            const profileData = {
-              id: loginUserId,
-              email: verifyData.user.email || null,
-              phone: fullPhoneNumber,
-              is_verified: true,
-              safety_companion_acknowledged: safetyCompanionAcknowledged,
-              trial_start_date: new Date().toISOString(),
-            };
-            const insertRes = await fetchWithTimeout(
-              `${restUrl}/${TABLES.MOBILE_USERS}`,
-              { method: 'POST', headers: restHeaders, body: JSON.stringify(profileData) },
-              8_000
-            );
-            if (insertRes.ok) {
-              console.log('[OTP] Direct profile create succeeded');
-              directSucceeded = true;
-            } else {
-              console.error('Profile creation error:', await insertRes.text());
-            }
-          }
-        } catch (directErr: any) {
-          console.warn('[OTP] Direct Supabase REST failed:', directErr?.message);
-        }
+  //         if (existingProfile) {
+  //           const updateData: any = {
+  //             phone: fullPhoneNumber,
+  //             is_verified: true,
+  //             safety_companion_acknowledged: safetyCompanionAcknowledged,
+  //           };
+  //           if (!existingProfile.trial_start_date) {
+  //             updateData.trial_start_date = new Date().toISOString();
+  //           }
+  //           const patchRes = await fetchWithTimeout(
+  //             `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}`,
+  //             { method: 'PATCH', headers: restHeaders, body: JSON.stringify(updateData) },
+  //             8_000
+  //           );
+  //           if (patchRes.ok) {
+  //             console.log('[OTP] Direct profile update succeeded');
+  //             directSucceeded = true;
+  //           } else {
+  //             console.error('Profile update error:', await patchRes.text());
+  //           }
+  //         } else {
+  //           const profileData = {
+  //             id: loginUserId,
+  //             email: verifyData.user.email || null,
+  //             phone: fullPhoneNumber,
+  //             is_verified: true,
+  //             safety_companion_acknowledged: safetyCompanionAcknowledged,
+  //             trial_start_date: new Date().toISOString(),
+  //           };
+  //           const insertRes = await fetchWithTimeout(
+  //             `${restUrl}/${TABLES.MOBILE_USERS}`,
+  //             { method: 'POST', headers: restHeaders, body: JSON.stringify(profileData) },
+  //             8_000
+  //           );
+  //           if (insertRes.ok) {
+  //             console.log('[OTP] Direct profile create succeeded');
+  //             directSucceeded = true;
+  //           } else {
+  //             console.error('Profile creation error:', await insertRes.text());
+  //           }
+  //         }
+  //       } catch (directErr: any) {
+  //         console.warn('[OTP] Direct Supabase REST failed:', directErr?.message);
+  //       }
 
-        // ── Attempt 2: Dashboard proxy fallback (when Supabase unreachable) ──
-        if (!directSucceeded) {
-          try {
-            console.log('[OTP] Trying dashboard proxy for profile sync...');
-            // Build proxy payload — only set trial_start_date for new users
-            // (matching the direct REST path logic above)
-            const proxyPayload: any = {
-              phone: fullPhoneNumber,
-              is_verified: true,
-              safety_companion_acknowledged: safetyCompanionAcknowledged,
-            };
-            // Only set trial_start_date if user didn't already have one
-            // (existingProfile is from the direct REST SELECT above — may be null if that failed)
-            if (!existingProfile?.trial_start_date) {
-              proxyPayload.trial_start_date = new Date().toISOString();
-            }
-            const proxyRes = await fetchWithTimeout(
-              `${apiBaseUrl}/api/mobile/profile`,
-              {
-                method: 'PATCH',
-                headers: {
-                  'Authorization': `Bearer ${accessToken}`,
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify(proxyPayload),
-              },
-              10_000
-            );
-            if (proxyRes.ok) {
-              console.log('[OTP] Dashboard proxy profile sync succeeded');
-              // The PATCH response includes the updated profile — cache it
-              const proxyJson = await proxyRes.json();
-              const updatedProfile = proxyJson?.data?.profile ?? null;
-              if (updatedProfile) {
-                await ProfileStorage.set(loginUserId, updatedProfile);
-                console.log('[OTP] Profile cached from proxy response');
-              }
-              directSucceeded = true;
-            } else {
-              console.warn('[OTP] Dashboard proxy profile sync failed:', proxyRes.status);
-            }
-          } catch (proxyErr: any) {
-            console.warn('[OTP] Dashboard proxy fallback failed:', proxyErr?.message);
-          }
-        }
+  //       // ── Attempt 2: Dashboard proxy fallback (when Supabase unreachable) ──
+  //       if (!directSucceeded) {
+  //         try {
+  //           console.log('[OTP] Trying dashboard proxy for profile sync...');
+  //           // Build proxy payload — only set trial_start_date for new users
+  //           // (matching the direct REST path logic above)
+  //           const proxyPayload: any = {
+  //             phone: fullPhoneNumber,
+  //             is_verified: true,
+  //             safety_companion_acknowledged: safetyCompanionAcknowledged,
+  //           };
+  //           // Only set trial_start_date if user didn't already have one
+  //           // (existingProfile is from the direct REST SELECT above — may be null if that failed)
+  //           if (!existingProfile?.trial_start_date) {
+  //             proxyPayload.trial_start_date = new Date().toISOString();
+  //           }
+  //           const proxyRes = await fetchWithTimeout(
+  //             `${apiBaseUrl}/api/mobile/profile`,
+  //             {
+  //               method: 'PATCH',
+  //               headers: {
+  //                 'Authorization': `Bearer ${accessToken}`,
+  //                 'Content-Type': 'application/json',
+  //               },
+  //               body: JSON.stringify(proxyPayload),
+  //             },
+  //             10_000
+  //           );
+  //           if (proxyRes.ok) {
+  //             console.log('[OTP] Dashboard proxy profile sync succeeded');
+  //             // The PATCH response includes the updated profile — cache it
+  //             const proxyJson = await proxyRes.json();
+  //             const updatedProfile = proxyJson?.data?.profile ?? null;
+  //             if (updatedProfile) {
+  //               await ProfileStorage.set(loginUserId, updatedProfile);
+  //               console.log('[OTP] Profile cached from proxy response');
+  //             }
+  //             directSucceeded = true;
+  //           } else {
+  //             console.warn('[OTP] Dashboard proxy profile sync failed:', proxyRes.status);
+  //           }
+  //         } catch (proxyErr: any) {
+  //           console.warn('[OTP] Dashboard proxy fallback failed:', proxyErr?.message);
+  //         }
+  //       }
 
-        // ── Cache full profile (if direct REST succeeded but cache not yet set) ──
-        if (directSucceeded) {
-          try {
-            const cacheRes = await fetchWithTimeout(
-              `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}&select=id,profile_completion_completed,name,email,phone,date_of_birth,home_address,work_address,emergency_contact_name,emergency_contact_phone,emergency_contact_relationship,blood_type,allergies,passkey_setup_completed,emergency_passkey_hash,trial_start_date,created_at,updated_at`,
-              { headers: restHeaders },
-              8_000
-            );
-            if (cacheRes.ok) {
-              const cacheRows = await cacheRes.json();
-              const fullProfile = Array.isArray(cacheRows) && cacheRows.length > 0 ? cacheRows[0] : null;
-              if (fullProfile) {
-                await ProfileStorage.set(loginUserId, fullProfile);
-                console.log('[OTP] Profile cached for instant boot');
-              }
-            }
-          } catch (cacheErr: any) {
-            console.warn('[OTP] Profile cache update failed (non-fatal):', cacheErr?.message);
-          }
-        }
-      })();
-    } catch (error: any) {
-      console.error('OTP verification error:', error);
-      let errorMessage = 'OTP verification failed';
+  //       // ── Cache full profile (if direct REST succeeded but cache not yet set) ──
+  //       if (directSucceeded) {
+  //         try {
+  //           const cacheRes = await fetchWithTimeout(
+  //             `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${loginUserId}&select=id,profile_completion_completed,name,email,phone,date_of_birth,home_address,work_address,emergency_contact_name,emergency_contact_phone,emergency_contact_relationship,blood_type,allergies,passkey_setup_completed,emergency_passkey_hash,trial_start_date,created_at,updated_at`,
+  //             { headers: restHeaders },
+  //             8_000
+  //           );
+  //           if (cacheRes.ok) {
+  //             const cacheRows = await cacheRes.json();
+  //             const fullProfile = Array.isArray(cacheRows) && cacheRows.length > 0 ? cacheRows[0] : null;
+  //             if (fullProfile) {
+  //               await ProfileStorage.set(loginUserId, fullProfile);
+  //               console.log('[OTP] Profile cached for instant boot');
+  //             }
+  //           }
+  //         } catch (cacheErr: any) {
+  //           console.warn('[OTP] Profile cache update failed (non-fatal):', cacheErr?.message);
+  //         }
+  //       }
+  //     })();
+  //   } catch (error: any) {
+  //     console.error('OTP verification error:', error);
+  //     let errorMessage = 'OTP verification failed';
 
-      if (error?.name === 'AbortError') {
-        console.warn('[OTP] Flow timed out:', error?.message);
-        errorMessage = 'Login is taking longer than expected. Please try again.';
-      } else if (error.message?.includes('Invalid') || error.message?.includes('expired') || error.message?.includes('INVALID_OTP')) {
-        errorMessage = 'Invalid or expired OTP code. Please try again.';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
+  //     if (error?.name === 'AbortError') {
+  //       console.warn('[OTP] Flow timed out:', error?.message);
+  //       errorMessage = 'Login is taking longer than expected. Please try again.';
+  //     } else if (error.message?.includes('Invalid') || error.message?.includes('expired') || error.message?.includes('INVALID_OTP')) {
+  //       errorMessage = 'Invalid or expired OTP code. Please try again.';
+  //     } else if (error.message) {
+  //       errorMessage = error.message;
+  //     }
 
-      Alert.alert('Error', errorMessage);
-    } finally {
-      otpVerifyInFlightRef.current = false;
-      if (mountedRef.current) setLoading(false);
+  //     Alert.alert('Error', errorMessage);
+  //   } finally {
+  //     otpVerifyInFlightRef.current = false;
+  //     if (mountedRef.current) setLoading(false);
+  //   }
+  // };
+
+
+  const handleVerifyOTP = async () => {
+  if (otpVerifyInFlightRef.current) return;
+
+  if (!otpCode || otpCode.trim().length === 0) {
+    Alert.alert("Error", "Please enter the OTP code");
+    return;
+  }
+
+  if (otpCode.trim().length !== 6) {
+    Alert.alert("Error", "OTP must be 6 digits");
+    return;
+  }
+
+  setLoading(true);
+  otpVerifyInFlightRef.current = true;
+
+  try {
+    const fullPhoneNumber = phone;
+
+    if (__DEV__) {
+      console.log("Verifying OTP:", fullPhoneNumber);
     }
-  };
+
+ 
+    const res = await verifyOtp(fullPhoneNumber, otpCode.trim());
+
+    /**
+     * Expected response:
+     * {
+     *   accessToken: string;
+     *   refreshToken: string;
+     *   userId: string;
+     *   isNewUser: boolean;
+     *   user: UserProfile;
+     * }
+     */
+
+    await setApiSession(res.accessToken, res.refreshToken);
+
+    // we will fetch the user and store it alongside in the storage
+    // await setUser(res.userId);
+
+    await ProfileStorage.set(res.userId, res.user);
+
+    await auth.completeLogin(res.userId, {
+      access_token: res.accessToken,
+      refresh_token: res.refreshToken,
+    });
+
+    if (__DEV__) {
+      console.log("Login success:", res.userId);
+    }
+
+
+    // open the onboarding if it's a new user, otherwise proceed to the app
+    // if (res.isNewUser) {
+    //   if (__DEV__) console.log("New user detected, showing onboarding");
+    //   onShowOnboarding?.();
+    // } else {
+    //   if (__DEV__) console.log("Existing user logged in");
+    //   onShowOnboarding?.();
+    //   //onSignupSuccess?.(comingFromPlanSelection);
+    // }
+
+  } catch (error: any) {
+    console.error("OTP verification error:", error);
+
+    await handleApiError(error, {
+      logoutOn401: true,
+    });
+
+  } finally {
+    otpVerifyInFlightRef.current = false;
+    if (mountedRef.current) setLoading(false);
+  }
+};
 
   // Auto-verify when OTP reaches 6 digits
   const otpAutoVerifyRef = useRef(false);
@@ -708,10 +849,10 @@ export function AuthScreen({
 
         // Trigger hydration
         console.log('[Email Step 4] Calling completeLogin...');
-        await auth.completeLogin(emailLoginUserId, signInSession.refresh_token
-          ? { access_token: signInSession.access_token, refresh_token: signInSession.refresh_token }
-          : undefined
-        );
+        // await auth.completeLogin(emailLoginUserId, signInSession.refresh_token
+        //   ? { access_token: signInSession.access_token, refresh_token: signInSession.refresh_token }
+        //   : undefined
+        // );
       } else {
         throw new Error('Could not establish session. Please try again.');
       }

@@ -39,7 +39,7 @@ import './src/features/tracking/tracking.task';
 import { RootNavigator } from '@/navigation/RootNavigator';
 
 // Core auth system (new implementation)
-import { AuthProvider, useAuth } from '@/core/auth';
+
 import { BootGuard } from '@/core/boot/boot.guard';
 import { AppStateProvider } from '@/context/AppStateContext';
 
@@ -51,6 +51,9 @@ import { useLiveLocationPublisher } from '@/core/location/useLiveLocationPublish
 // iOS In-App Purchase
 import { IOSPurchaseService } from '@/features/subscription/ios-purchase.service';
 import { Platform } from 'react-native';
+import { setupInterceptors } from '@/api/interceptors';
+import { AuthProvider } from '@/core/auth/AuthContext';
+import { useAuth } from '@/core/auth';
 
 // Keep the native splash visible until we decide the app is ready.
 // This eliminates the "blink then black spinner" in preview/production builds.
@@ -96,6 +99,8 @@ function NativeSplashGate({ children }: { children: React.ReactNode }) {
   );
 }
 
+
+
 /**
  * Root App Component
  * 
@@ -109,7 +114,9 @@ export default function App() {
   useEffect(() => {
     setupNotificationHandlers();
     setupNotificationChannels();
+    setupInterceptors();
   }, []);
+  
 
   // Initialize iOS StoreKit connection
   useEffect(() => {

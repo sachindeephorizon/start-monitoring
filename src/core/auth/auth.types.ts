@@ -8,6 +8,8 @@
  * Only persisted data survives process death.
  */
 
+import { UserProfile } from "../profile";
+
 /**
  * App boot state machine (authoritative)
  *
@@ -59,7 +61,7 @@ export type AuthUser = {
 export type AuthState =
   | { status: 'loading' }
   | { status: 'unauthenticated' }
-  | { status: 'authenticated'; user: AuthUser; session: any };
+  | { status: 'authenticated'; user: UserProfile | null; session: any };
 
 /**
  * Sign in credentials
