@@ -64,6 +64,7 @@ export interface UserSubscription {
     gatewaySubscriptionId?: string;
     status: SubscriptionStatus;
     amount: number;
+    plan: Plan;
     offerCode?: string;
     offerAmount?: number;
     billedAmount: number;
@@ -75,6 +76,36 @@ export interface UserSubscription {
     createdAt: Date;
     updatedAt: Date;
 }
+
+
+export interface Plan {
+  id: string;
+  name: string;
+  description?: string;
+  tagline?: string;
+  frequency: Frequency;
+  price: number;
+  noOfUsers: number;
+  type: PlanType;
+  gatewayPlanId?: string;
+  isDefault: boolean;
+  features: Record<string, any>;
+  createdAt: Date;
+  updatedAt: Date;
+}
+
+export enum Frequency {
+  MONTHLY = 'MONTHLY',
+  YEARLY = 'YEARLY',
+}
+
+
+export enum PlanType {
+  INDIVIDUAL = 'INDIVIDUAL',
+  FAMILY = 'FAMILY',
+  ENTERPRISE = 'ENTERPRISE',
+}
+
 
 export enum SubscriptionType {
     FREE = "FREE",

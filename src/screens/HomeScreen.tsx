@@ -1084,7 +1084,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         </ScrollView>
         
         {/* Video Monitor Modal */}
-        <VideoMonitorModal
+        {/* <VideoMonitorModal
           visible={activeService === 'video' && !showCall}
           isMonitoring={isMonitoring && !showCall}
           cameraPermission={cameraPermission}
@@ -1098,7 +1098,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           onSetIsVideoEnabled={setIsVideoEnabled}
           onSetIsMonitoring={setIsMonitoring}
           onEndVideoSession={handleEndVideoSession}
-        />
+        /> */}
         
         {/* Location Tracking Modal */}
         <LocationTrackingModal
@@ -1142,7 +1142,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         )}
         
         {/* Stream Video Call Interface - Full Screen */}
-        {showCall && callSession && !isAudioCall && (
+        {/* {showCall && callSession && !isAudioCall && (
           <View style={{
             position: 'absolute',
             top: 0,
@@ -1166,7 +1166,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
               />
             </Suspense>
           </View>
-        )}
+        )} */}
         
         {/* Slide Menu */}
         <SlideMenu
