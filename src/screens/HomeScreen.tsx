@@ -27,9 +27,6 @@ import { layoutStyles } from '@/styles/Layout.styles';
 import { serviceCardStyles } from '@/styles/ServiceCard.styles';
 import { emergencyStyles } from '@/styles/Emergency.styles';
 import VideoMonitorModal from '@/components/modals/VideoMonitorModal';
-import LocationTrackingModal from '@/components/modals/LocationTrackingModal';
-import CheckInModal from '@/components/modals/CheckInModal';
-import BodyguardModal from '@/components/modals/BodyguardModal';
 import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
 import AudioCallInterface from '@/components/AudioCallInterface';
 import ChatBox from '@/components/chat/ChatBox';
@@ -48,6 +45,7 @@ import { formatChatTime } from '@/utils/chat';
 import { useIOSCompatibleSiren } from '@/hooks/useIOSCompatibleSiren';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
+import { Service } from '@/types/services';
 
 interface HomeScreenProps {
   navigation: any;
@@ -113,7 +111,12 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   useEffect(() => {
     const params = route.params as any;
     if (params?.openService) {
-      setActiveService(params.openService);
+      const service = params.openService;
+      if (service === Service.TRACKING) {
+        (navigation as any).navigate('Tracking');
+      } else {
+        setActiveService(service);
+      }
       // Clear param so it doesn't re-trigger on re-render or focus
       navigation.setParams({ openService: undefined } as any);
     }
@@ -158,8 +161,12 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
       console.log('[HomeScreen] Cold-start notification fallback:', pending.screen, pending.params, 'age:', ageMs, 'ms');
 
       if (pending.screen === 'Home' && pending.params?.openService) {
-        // Same screen — just open the service modal
-        setActiveService(pending.params.openService);
+        const service = pending.params.openService;
+        if (service === Service.TRACKING) {
+          (navigation as any).navigate('Tracking');
+        } else {
+          setActiveService(service);
+        }
       } else if (pending.screen && pending.screen !== 'Home') {
         // Different screen — navigate (e.g. CheckIn screen from check_in notification)
         (navigation as any).navigate(pending.screen, pending.params);
@@ -681,13 +688,13 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const handleServicePress = (service: string) => {
     if (service === 'Video Monitor Me') {
       // Open modal immediately (no delay). Modal itself will verify subscription access.
-      setActiveService('video');
+      setActiveService(Service.VIDEO);
     } else if (service === 'Track Me On The Go') {
-      setActiveService('tracking');
+      (navigation as any).navigate('Tracking');
     } else if (service === 'Schedule Check In') {
-      setActiveService('checkin');
+      (navigation as any).navigate('ScheduleCheckIn');
     } else if (service === 'Book A Bodyguard') {
-      setActiveService('bodyguard');
+      (navigation as any).navigate('BookBodyguard');
     } else {
       // TODO: Implement other service modals
       Alert.alert('Service', `${service} feature will be implemented`);
@@ -1072,7 +1079,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         
         {/* Video Monitor Modal */}
         <VideoMonitorModal
-          visible={activeService === 'video' && !showCall}
+          visible={activeService === Service.VIDEO && !showCall}
           isMonitoring={isMonitoring && !showCall}
           cameraPermission={cameraPermission}
           cameraFacing={cameraFacing}
@@ -1085,27 +1092,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           onSetIsVideoEnabled={setIsVideoEnabled}
           onSetIsMonitoring={setIsMonitoring}
           onEndVideoSession={handleEndVideoSession}
-        />
-        
-        {/* Location Tracking Modal */}
-        <LocationTrackingModal
-          visible={activeService === 'tracking'}
-          onClose={() => setActiveService(null)}
-          setActiveService={setActiveService}
-        />
-        
-        {/* Check-In Modal */}
-        <CheckInModal
-          visible={activeService === 'checkin'}
-          onClose={() => setActiveService(null)}
-          setActiveService={setActiveService}
-        />
-        
-        {/* Bodyguard Modal */}
-        <BodyguardModal
-          visible={activeService === 'bodyguard'}
-          onClose={() => setActiveService(null)}
-          setActiveService={setActiveService}
         />
         
         {/* Audio Call Interface - Full Screen */}

@@ -25,6 +25,9 @@ import PoliciesScreen from '@/screens/PoliciesScreen';
 import CheckInScreen from '@/screens/CheckInScreen';
 import ChatScreen from '@/screens/ChatScreen';
 import EmergencyScreen from '@/screens/EmergencyScreen';
+import TrackingScreen from '@/screens/TrackingScreen';
+import ScheduleCheckInScreen from '@/screens/ScheduleCheckInScreen';
+import BookBodyguardScreen from '@/screens/BookBodyguardScreen';
 
 const Stack = createStackNavigator();
 
@@ -41,11 +44,12 @@ export type MainStackParamList = {
   Emergency: { emergencyId?: string };
   CheckIn: { checkInId?: string };
   Chat: { chatRequestId: string };
+  Tracking: undefined;
+  ScheduleCheckIn: undefined;
+  BookBodyguard: undefined;
   // TODO: Add these when screens are implemented
-  // Tracking: { sessionId?: string };
   // VideoCall: { sessionId: string; roomCode: string };
   // AudioCall: { sessionId: string; roomCode: string };
-  // Booking: { bookingId?: string };
 };
 
 const NAVIGATE_TO_PLANS_KEY = '@navigate_to_subscription_plans';
@@ -122,6 +126,9 @@ export function MainNavigator() {
       <Stack.Screen name="CheckIn" component={CheckInScreen} />
       <Stack.Screen name="Chat" component={ChatScreen} />
       <Stack.Screen name="Emergency" component={EmergencyScreen} />
+      <Stack.Screen name="Tracking" component={TrackingScreen} />
+      <Stack.Screen name="ScheduleCheckIn" component={ScheduleCheckInScreen} />
+      <Stack.Screen name="BookBodyguard" component={BookBodyguardScreen} />
     </Stack.Navigator>
   );
 }
