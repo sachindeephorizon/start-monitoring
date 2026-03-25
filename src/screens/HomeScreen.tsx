@@ -45,6 +45,7 @@ import { formatChatTime } from '@/utils/chat';
 import { useIOSCompatibleSiren } from '@/hooks/useIOSCompatibleSiren';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
+import { Service } from '@/types/services';
 
 interface HomeScreenProps {
   navigation: any;
@@ -111,7 +112,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     const params = route.params as any;
     if (params?.openService) {
       const service = params.openService;
-      if (service === 'tracking') {
+      if (service === Service.TRACKING) {
         (navigation as any).navigate('Tracking');
       } else {
         setActiveService(service);
@@ -161,7 +162,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
 
       if (pending.screen === 'Home' && pending.params?.openService) {
         const service = pending.params.openService;
-        if (service === 'tracking') {
+        if (service === Service.TRACKING) {
           (navigation as any).navigate('Tracking');
         } else {
           setActiveService(service);
@@ -687,7 +688,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const handleServicePress = (service: string) => {
     if (service === 'Video Monitor Me') {
       // Open modal immediately (no delay). Modal itself will verify subscription access.
-      setActiveService('video');
+      setActiveService(Service.VIDEO);
     } else if (service === 'Track Me On The Go') {
       (navigation as any).navigate('Tracking');
     } else if (service === 'Schedule Check In') {
@@ -1078,7 +1079,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         
         {/* Video Monitor Modal */}
         <VideoMonitorModal
-          visible={activeService === 'video' && !showCall}
+          visible={activeService === Service.VIDEO && !showCall}
           isMonitoring={isMonitoring && !showCall}
           cameraPermission={cameraPermission}
           cameraFacing={cameraFacing}
