@@ -639,11 +639,11 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
 
           // CRITICAL FIX: Ensure user is connected (check if already connected first)
           let finalClient = streamVideoServiceDedicated.getClient();
-          const sanitizedUserId = actualUserId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_mobile';
+          const streamUserId = actualUserId;
 
           // CRITICAL: Check if user is already connected by checking currentUser (more reliable than client.userID)
           let currentUser = streamVideoServiceDedicated.getCurrentUser();
-          let isAlreadyConnected = currentUser && currentUser.id === sanitizedUserId;
+          let isAlreadyConnected = currentUser && currentUser.id === streamUserId;
 
           // iOS FIX: If any connection is in progress (pre-init or another call), wait for it instead of starting a new one (prevents deadlock)
           if (streamVideoServiceDedicated.isConnecting() && !isAlreadyConnected) {
@@ -653,7 +653,7 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
               // Refresh client and user after connection completes
               finalClient = streamVideoServiceDedicated.getClient();
               currentUser = streamVideoServiceDedicated.getCurrentUser();
-              isAlreadyConnected = currentUser && currentUser.id === sanitizedUserId;
+              isAlreadyConnected = currentUser && currentUser.id === streamUserId;
               if (finalClient && isAlreadyConnected) {
                 logger.log('[StreamVideoCallDedicated] Connection completed, user connected:', currentUser?.id ?? '(unknown)');
               } else {
@@ -690,21 +690,23 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
               // No additional wait needed - currentUser is set immediately after connectUser resolves.
               // Verify currentUser is set (this is the reliable indicator)
               const verifyUser = streamVideoServiceDedicated.getCurrentUser();
-              if (!verifyUser || verifyUser.id !== sanitizedUserId) {
+              if (!verifyUser || verifyUser.id !== streamUserId) {
                 logger.warn('[StreamVideoCallDedicated] User verification unclear, but continuing');
               } else {
                 logger.log('[StreamVideoCallDedicated] User verified connected:', verifyUser.id);
               }
-            } catch (error) {
-              logger.warn('[StreamVideoCallDedicated] User initialization error, getting fresh client:', error);
-              // Get fresh client anyway - might be connected from pre-init
-              finalClient = streamVideoServiceDedicated.getClient()!;
-              if (!finalClient) {
-                // Last resort: try to initialize again
-                await streamVideoServiceDedicated.initializeUser(actualUserId, userName, true);
-                finalClient = streamVideoServiceDedicated.getClient()!;
-                // iOS: No wait - proceed immediately after init completes
+            } catch (initError) {
+              logger.error('[StreamVideoCallDedicated] User initialization failed:', initError);
+              // Only recover silently if a pre-initialized connection is already available.
+              // If there is no connected user, re-throw so the caller surfaces the real error
+              // instead of proceeding to call.join() and getting a confusing
+              // "User token is not set" from the Stream SDK.
+              const recoveredUser = streamVideoServiceDedicated.getCurrentUser();
+              finalClient = streamVideoServiceDedicated.getClient() ?? null;
+              if (!recoveredUser || !finalClient) {
+                throw initError;
               }
+              logger.log('[StreamVideoCallDedicated] Recovered via pre-initialized connection:', recoveredUser.id);
             }
           }
 
@@ -715,11 +717,11 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
 
           // CRITICAL: Verify connection using currentUser (more reliable than client.userID)
           const verifyUser = streamVideoServiceDedicated.getCurrentUser();
-          if (verifyUser && verifyUser.id === sanitizedUserId) {
+          if (verifyUser && verifyUser.id === streamUserId) {
             logger.log('[StreamVideoCallDedicated] Connection verified successfully:', verifyUser.id);
           } else {
             logger.warn('[StreamVideoCallDedicated] Connection verification unclear, but proceeding:', {
-              expected: sanitizedUserId,
+              expected: streamUserId,
               actual: verifyUser?.id || 'not set'
             });
           }

@@ -1,19 +1,62 @@
 /**
  * Video Call Service
- * 
+ *
  * Core video call operations using Stream.io for WebRTC communication.
- * 
+ *
  * iOS SAFETY: Video calls are foreground-only. No background execution is allowed.
  * Video calls MUST terminate when the app backgrounds or screen locks.
- * 
+ *
  * DESIGN PRINCIPLE:
  * > Video calls exist ONLY while the app is in the foreground.
  * > When the app backgrounds, the call must end immediately.
  */
 
 import { StreamVideoClient, Call } from '@stream-io/video-react-native-sdk';
-import { supabase, ensureValidSession } from '@/lib/supabase';
+import {
+  initiateCallSession,
+  updateCallSessionStatus,
+  endCallSession,
+  CallType,
+  CallServiceType,
+  CallPriority,
+  CallStatus,
+} from '@/api/call-sessions';
 import { VideoCallStatus, VideoCallSession } from './video.types';
+
+/**
+ * Generate a unique call ID.
+ * Stream.io uses this string as the room identifier — it must be unique per call.
+ */
+function generateCallId(): string {
+  const timestamp = Date.now().toString(36);
+  const random = Math.random().toString(36).substring(2, 8);
+  return `call-${timestamp}-${random}`;
+}
+
+function mapPriority(priority: string): CallPriority {
+  switch (priority) {
+    case 'emergency':
+    case 'high':
+      return CallPriority.HIGH;
+    case 'low':
+      return CallPriority.LOW;
+    default:
+      return CallPriority.MEDIUM;
+  }
+}
+
+function resolveServiceType(
+  priority: string,
+  contextReason?: string
+): CallServiceType {
+  if (
+    priority === 'emergency' ||
+    contextReason?.toLowerCase().includes('emergency')
+  ) {
+    return CallServiceType.EMERGENCY_VIDEO_CALL;
+  }
+  return CallServiceType.DIRECT_VIDEO_CALL;
+}
 
 /**
  * Video Call Service
@@ -74,15 +117,15 @@ export const VideoCallService = {
   },
 
   /**
-   * Create a new video call session
-   * 
-   * Creates a call session record in the database.
-   * The actual Stream.io call is created separately.
-   * 
-   * @param agentId Optional agent ID if call is agent-initiated
-   * @param contextReason Reason/context for the call
-   * @param priority Call priority
-   * @returns Created call session ID
+   * Create a new video call session via the app backend.
+   *
+   * Generates a unique callId locally — this IS the Stream room code.
+   * Registers it with the backend so the agent dashboard can see the call.
+   *
+   * @param agentId   Unused (kept for call-site compatibility)
+   * @param contextReason  Reason/context for the call
+   * @param priority  Call priority
+   * @returns { success, callSessionId } where callSessionId === Stream room code
    */
   async createCallSession(
     agentId?: string,
@@ -90,177 +133,67 @@ export const VideoCallService = {
     priority: 'low' | 'medium' | 'high' | 'emergency' = 'medium'
   ): Promise<{ success: boolean; callSessionId?: string; error?: string }> {
     try {
-      const session = await ensureValidSession();
-      const user = session?.user;
-      if (!user) {
-        return {
-          success: false,
-          error: 'Not authenticated',
-        };
-      }
+      const callId = generateCallId();
 
-      // Get user info
-      const { data: userProfile } = await supabase
-        .from('mobile_users')
-        .select('name, phone')
-        .eq('id', user.id)
-        .single();
+      await initiateCallSession({
+        callType: CallType.VIDEO,
+        serviceType: resolveServiceType(priority, contextReason),
+        priority: mapPriority(priority),
+        callId,
+      });
 
-      // Generate room code matching old app pattern (max 50 chars for DB)
-      // Pattern: call-${shortUserId}-${timestamp}
-      const sanitizedUserId = user.id.replace(/\./g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase();
-      const shortUserId = sanitizedUserId.substring(0, 8); // Use first 8 chars
-      const timestamp = Date.now().toString().slice(-8); // Use last 8 digits
-      const roomCode = `call-${shortUserId}-${timestamp}`;
-      
-      // Ensure room code is never longer than 50 characters
-      if (roomCode.length > 50) {
-        throw new Error(`Room code too long: ${roomCode.length} characters (max 50)`);
-      }
-
-      // Create call session in database
-      const { data, error } = await supabase
-        .from('call_sessions')
-        .insert({
-          mobile_user_id: user.id,
-          user_name: userProfile?.name || 'User',
-          user_phone: userProfile?.phone || null,
-          agent_id: agentId || null,
-          call_type: 'video',
-          status: 'initiating',
-          priority,
-          room_code: roomCode,
-          context_reason: contextReason || null,
-        })
-        .select('id')
-        .single();
-
-      if (error) {
-        console.error('[Video Call Service] Failed to create call session:', error);
-        return {
-          success: false,
-          error: error.message || 'Failed to create call session',
-        };
-      }
-
-      // Create video session record
-      const { error: videoSessionError } = await supabase
-        .from('video_sessions')
-        .insert({
-          session_id: data.id,
-          mobile_user_id: user.id,
-          agent_id: agentId || null,
-          status: 'waiting',
-          room_code: roomCode,
-          session_type: priority === 'emergency' ? 'emergency' : 'monitoring',
-          video_enabled: true,
-          audio_enabled: true,
-        });
-
-      if (videoSessionError) {
-        console.error('[Video Call Service] Failed to create video session:', videoSessionError);
-        // Continue anyway - call session was created
-      }
-
-      return {
-        success: true,
-        callSessionId: data.id,
-      };
+      return { success: true, callSessionId: callId };
     } catch (error: any) {
-      console.error('[Video Call Service] Error creating call session:', error);
+      console.error('[Video Call Service] Failed to create call session:', error);
       return {
         success: false,
-        error: error.message || 'An unexpected error occurred',
+        error: error.message || 'Failed to create call session',
       };
     }
   },
 
   /**
-   * Update call session status
-   * 
-   * @param callSessionId Call session ID
-   * @param status New status
+   * Update call session status via the app backend.
+   *
+   * Calls endCallSession for terminal states (ended/failed),
+   * and updateCallSessionStatus for intermediate states.
+   *
+   * @param callSessionId Call session ID (= Stream room code)
+   * @param status        New status
    */
   async updateCallStatus(
     callSessionId: string,
     status: VideoCallStatus
   ): Promise<void> {
     try {
-      const dbStatus = status === 'active' ? 'active' : 
-                       status === 'ended' ? 'ended' :
-                       status === 'failed' ? 'failed' :
-                       'connecting';
-
-      await supabase
-        .from('call_sessions')
-        .update({
-          status: dbStatus,
-          ...(status === 'active' && { started_at: new Date().toISOString() }),
-          ...(status === 'ended' && { ended_at: new Date().toISOString() }),
-        })
-        .eq('id', callSessionId);
-
-      // Also update video session status
-      await supabase
-        .from('video_sessions')
-        .update({
-          status: status === 'active' ? 'connected' :
-                  status === 'ended' ? 'ended' :
-                  status === 'failed' ? 'failed' :
-                  'connecting',
-          ...(status === 'active' && { connected_at: new Date().toISOString() }),
-          ...(status === 'ended' && { ended_at: new Date().toISOString() }),
-        })
-        .eq('session_id', callSessionId);
+      if (status === 'ended' || status === 'failed') {
+        await endCallSession(callSessionId);
+      } else {
+        const apiStatus =
+          status === 'active' ? CallStatus.ACTIVE : CallStatus.INITIATED;
+        await updateCallSessionStatus(callSessionId, apiStatus);
+      }
     } catch (error) {
       console.error('[Video Call Service] Error updating call status:', error);
     }
   },
 
   /**
-   * Get call session by ID
-   * 
-   * @param callSessionId Call session ID
-   * @returns Call session record
+   * Get call session by ID.
+   *
+   * In the new flow the callId IS the Stream room code — no backend
+   * round-trip is needed. Returns a minimal session object immediately.
+   *
+   * @param callSessionId Call session ID (= Stream room code)
    */
   async getCallSession(callSessionId: string): Promise<VideoCallSession | null> {
-    try {
-      const session = await ensureValidSession();
-      const user = session?.user;
-      if (!user) {
-        return null;
-      }
-
-      const { data, error } = await supabase
-        .from('call_sessions')
-        .select('*, video_sessions(*)')
-        .eq('id', callSessionId)
-        .eq('mobile_user_id', user.id)
-        .single();
-
-      if (error || !data) {
-        return null;
-      }
-
-      const videoSession = data.video_sessions?.[0];
-
-      return {
-        id: callSessionId,
-        call_id: callSessionId,
-        mobile_user_id: data.mobile_user_id,
-        agent_id: data.agent_id,
-        status: data.status as VideoCallStatus,
-        room_code: data.room_code,
-        session_type: videoSession?.session_type,
-        video_enabled: videoSession?.video_enabled,
-        audio_enabled: videoSession?.audio_enabled,
-        started_at: data.started_at,
-        ended_at: data.ended_at,
-      };
-    } catch (error) {
-      console.error('[Video Call Service] Error getting call session:', error);
-      return null;
-    }
+    return {
+      id: callSessionId,
+      call_id: callSessionId,
+      mobile_user_id: '',
+      status: 'active',
+      room_code: callSessionId,
+    };
   },
 };
 

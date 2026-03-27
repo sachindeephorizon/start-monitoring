@@ -67,27 +67,48 @@ class StreamVideoClientService {
   async connectUser(userId: string, userName?: string): Promise<void> {
     const client = await this.getClient();
 
-    // Sanitize user ID (add mobile suffix to match token generation)
-    const sanitizedUserId = userId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_mobile';
+    // IMPORTANT: Must match backend token payload user_id exactly.
+    const streamUserId = userId;
 
     // Check if already connected
-    if (this.currentUser && this.currentUser.id === sanitizedUserId) {
+    if (this.currentUser && this.currentUser.id === streamUserId) {
+      console.log('[StreamVideoClient] Already connected as:', streamUserId);
       return;
     }
 
-    // Generate token
-    const token = await this.generateToken();
+    // If a different user is connected, disconnect first
+    if (this.currentUser) {
+      try {
+        await client.disconnectUser();
+      } catch {
+        // best-effort
+      }
+      this.currentUser = null;
+    }
 
-    // Create user object
-    const user: User = {
-      id: sanitizedUserId,
-      name: userName || userId,
-      image: `https://robohash.org/${sanitizedUserId}`,
-    };
+    try {
+      // Generate token
+      const token = await this.generateToken();
 
-    // Connect user
-    await client.connectUser(user, token);
-    this.currentUser = user;
+      // Create user object
+      const user: User = {
+        id: streamUserId,
+        name: userName || userId,
+        image: `https://robohash.org/${streamUserId}`,
+      };
+
+      console.log('[StreamVideoClient] Calling connectUser for:', streamUserId);
+      await client.connectUser(user, token);
+      this.currentUser = user;
+      console.log('[StreamVideoClient] connectUser completed successfully');
+    } catch (error: any) {
+      console.error('[StreamVideoClient] connectUser failed:', error?.message ?? error);
+      // Clear cached token so the next attempt fetches a fresh one
+      this.cachedToken = null;
+      this.tokenExpiryTime = 0;
+      this.currentUser = null;
+      throw error;
+    }
   }
 
   /**
@@ -107,10 +128,24 @@ class StreamVideoClientService {
     // Fetch new token
     this.tokenInFlight = (async () => {
       try {
-        
+        const tokenResponse = await callSessionTokenGenerate();
 
-        const token = await callSessionTokenGenerate();
-        console.log('[StreamVideoClient] Token generated successfully', token);
+        const token =
+          typeof tokenResponse === 'string'
+            ? tokenResponse
+            : (tokenResponse as any)?.token ??
+              (tokenResponse as any)?.streamToken ??
+              (tokenResponse as any)?.accessToken;
+
+        if (!token || typeof token !== 'string') {
+          throw new Error('Token response missing token string');
+        }
+
+        // Cache token for a short period to avoid duplicate token requests.
+        this.cachedToken = token;
+        this.tokenExpiryTime = Date.now() + 55 * 60 * 1000;
+
+        console.log('[StreamVideoClient] Token generated successfully');
         return token;
       } finally {
         this.tokenInFlight = null;
