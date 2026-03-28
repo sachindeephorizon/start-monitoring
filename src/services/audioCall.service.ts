@@ -2,28 +2,27 @@
  * Audio Call Service (src/services/ — Stream SDK integration)
  *
  * Manages Stream Video SDK client, user init, call creation/join/end.
- * Used by AudioCallInterface component and HomeScreen for direct SDK calls.
- *
- * NOTE: There is a SEPARATE service at @/features/audio/audio.service
- * that handles DB-level call session CRUD (create/update session records).
- * The features/ service does NOT manage the Stream SDK — it only talks to Supabase.
- *
- * Both services are needed: this one for real-time audio, features/ for persistence.
+ * Uses the app backend call-session APIs (same backend family as video calls)
+ * for token generation and call session lifecycle.
  */
 
 import type { StreamVideoClient, User, Call } from '@stream-io/video-react-native-sdk';
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { apiBaseUrl } from '@/config/environment';
-import { Platform } from 'react-native';
+import {
+  callSessionTokenGenerate,
+  initiateCallSession,
+  updateCallSessionStatus,
+  endCallSession,
+  CallPriority,
+  CallServiceType,
+  CallStatus,
+  CallType,
+} from '@/api/call-sessions';
 import {
   hasWebRTCNativeModule,
   loadStreamVideoSdk,
   type StreamVideoSdkModule,
 } from '@/lib/streamVideoSdkLoader';
 import { configureAudioSession } from '@/utils/audioSession';
-import { getCachedUser } from '@/services/sessionCache';
-import 'react-native-get-random-values';
-import { v4 as uuidv4 } from 'uuid';
 
 export interface AudioCallSession {
   id: string;
@@ -43,9 +42,8 @@ class AudioCallService {
   private currentUser: User | null = null;
   private currentCall: Call | null = null;
   private cachedToken: string | null = null;
-  private cachedTokenUserId: string | null = null;
   private tokenExpiryTime: number = 0;
-  private tokenInFlightByUser = new Map<string, Promise<string>>();
+  private tokenInFlight: Promise<string> | null = null;
   private activeCallIds: Set<string> = new Set();
   private static instance: AudioCallService;
 
@@ -108,20 +106,17 @@ class AudioCallService {
   private async connectUser(userId: string, userName?: string): Promise<void> {
     if (!this.client) throw new Error('Audio call client not initialized');
 
-    // Sanitize user ID for Stream compatibility
-    const sanitizedUserId = userId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_audio';
-
     // Check if already connected as this user
-    if (this.currentUser && this.currentUser.id === sanitizedUserId) {
-      console.log('[AudioCallService] Already connected as user:', sanitizedUserId);
+    if (this.currentUser && this.currentUser.id === userId) {
+      console.log('[AudioCallService] Already connected as user:', userId);
       return;
     }
 
     try {
-      console.log('[AudioCallService] Connecting user for audio call:', sanitizedUserId);
+      console.log('[AudioCallService] Connecting user for audio call:', userId);
 
       // Disconnect previous user if connected as different user
-      if (this.currentUser && this.currentUser.id !== sanitizedUserId) {
+      if (this.currentUser && this.currentUser.id !== userId) {
         console.log('[AudioCallService] Disconnecting previous user before connecting new user');
         try {
           await this.client.disconnectUser();
@@ -133,7 +128,7 @@ class AudioCallService {
       }
 
       // Generate token
-      const token = await this.generateAudioToken(userId, userName || userId);
+      const token = await this.generateAudioToken();
 
       if (!token) {
         throw new Error('Failed to generate audio token');
@@ -141,16 +136,16 @@ class AudioCallService {
 
       // Create user object
       const user: User = {
-        id: sanitizedUserId,
+        id: userId,
         name: userName || userId,
-        image: `https://robohash.org/${sanitizedUserId}`,
+        image: `https://robohash.org/${userId}`,
       };
 
       // Connect the user
       await this.client.connectUser(user, token);
       this.currentUser = user;
 
-      console.log('[AudioCallService] User connected successfully for audio call:', sanitizedUserId);
+      console.log('[AudioCallService] User connected successfully for audio call:', userId);
     } catch (error) {
       console.error('[AudioCallService] Failed to connect user for audio call:', error);
       this.currentUser = null;
@@ -158,95 +153,50 @@ class AudioCallService {
     }
   }
 
-  private async generateAudioToken(userId: string, userName: string, forceRefresh: boolean = false): Promise<string> {
+  private async generateAudioToken(forceRefresh: boolean = false): Promise<string> {
     try {
-      const sanitizedUserId = userId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_audio';
-
       // Check cache
-      const currentSanitizedId = this.cachedTokenUserId || this.currentUser?.id || '';
-      if (!forceRefresh && this.cachedToken && Date.now() < this.tokenExpiryTime && currentSanitizedId === sanitizedUserId) {
-        console.log('[AudioCallService] Using cached audio token for user:', sanitizedUserId);
+      if (!forceRefresh && this.cachedToken && Date.now() < this.tokenExpiryTime) {
+        console.log('[AudioCallService] Using cached audio token');
         return this.cachedToken;
       }
 
-      if (!forceRefresh) {
-        const existing = this.tokenInFlightByUser.get(sanitizedUserId);
-        if (existing) {
-          console.log('[AudioCallService] Audio token fetch already in-flight, awaiting:', sanitizedUserId);
-          return await existing;
-        }
+      if (!forceRefresh && this.tokenInFlight) {
+        console.log('[AudioCallService] Audio token fetch already in-flight');
+        return await this.tokenInFlight;
       }
 
-      const fetchPromise = (async () => {
-        console.log('[AudioCallService] Generating new audio token for user:', sanitizedUserId);
+      this.tokenInFlight = (async () => {
+        console.log('[AudioCallService] Generating new audio token');
 
-        // Get Supabase session
-        const session = await ensureValidSession();
-        if (!session?.access_token) {
-          console.error('[AudioCallService] No Supabase session');
-          throw new Error('No active session - cannot generate audio token');
-        }
+        const tokenResponse = await callSessionTokenGenerate();
+        const token =
+          typeof tokenResponse === 'string'
+            ? tokenResponse
+            : (tokenResponse as any)?.token ??
+              (tokenResponse as any)?.streamToken ??
+              (tokenResponse as any)?.accessToken;
 
-        let originalUserId = session?.user?.id || '';
-        if (!originalUserId) {
-          console.error('[AudioCallService] No user in session - cannot generate audio token');
-          throw new Error('No authenticated user - cannot generate audio token');
-        }
-
-        // Generate token via API
-        // Use video-token endpoint as fallback if audio-token doesn't exist
-        const tokenUrl = `${apiBaseUrl}/api/stream/audio-token`;
-        const controller = new AbortController();
-        const fetchTimeout = setTimeout(() => controller.abort(), 10_000);
-        const response = await fetch(tokenUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-          },
-          body: JSON.stringify({
-            userId: originalUserId,
-            userName: userName,
-            sanitizedUserId: sanitizedUserId,
-          }),
-          signal: controller.signal,
-        });
-        clearTimeout(fetchTimeout);
-
-        if (!response.ok) {
-          throw new Error(`Token generation failed: ${response.statusText}`);
-        }
-
-        const raw = await response.json();
-        // API returns { success, data: { token, ... } } or { token } directly
-        const tokenData = raw.data || raw;
-        if (!tokenData.token) {
-          throw new Error('Invalid audio token response from server');
+        if (!token || typeof token !== 'string') {
+          throw new Error('Invalid audio token response from backend');
         }
 
         // Cache token for 1 hour
-        this.cachedToken = tokenData.token;
+        this.cachedToken = token;
         this.tokenExpiryTime = Date.now() + (60 * 60 * 1000);
-        this.cachedTokenUserId = sanitizedUserId;
-
-        console.log('[AudioCallService] Audio token generated successfully for user:', sanitizedUserId);
-        return tokenData.token;
+        console.log('[AudioCallService] Audio token generated successfully');
+        return token;
       })();
 
-      if (!forceRefresh) {
-        this.tokenInFlightByUser.set(sanitizedUserId, fetchPromise);
-      }
-
       try {
-        return await fetchPromise;
+        return await this.tokenInFlight;
       } finally {
-        this.tokenInFlightByUser.delete(sanitizedUserId);
+        this.tokenInFlight = null;
       }
     } catch (error) {
       console.error('[AudioCallService] Failed to generate audio token:', error);
       this.cachedToken = null;
       this.tokenExpiryTime = 0;
-      this.cachedTokenUserId = null;
       throw error;
     }
   }
@@ -257,9 +207,8 @@ class AudioCallService {
     }
 
     try {
-      const sanitizedUserId = userId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_audio';
-      if (this.currentUser && this.currentUser.id === sanitizedUserId && this.client) {
-        console.log('[AudioCallService] User already initialized and connected:', sanitizedUserId);
+      if (this.currentUser && this.currentUser.id === userId && this.client) {
+        console.log('[AudioCallService] User already initialized and connected:', userId);
         return this.client;
       }
 
@@ -295,100 +244,24 @@ class AudioCallService {
 
     // Ensure user is connected
     if (!this.currentUser) {
-      console.error('[AudioCallService] Cannot join call - user not connected');
-      try {
-        let authUser: any = getCachedUser();
-        if (!authUser) {
-          const validSession = await ensureValidSession();
-          authUser = validSession?.user || null;
-        }
-        // Removed getUser() fallback - getSession() is sufficient and avoids triggering SIGNED_OUT
-        if (authUser) {
-          console.log('[AudioCallService] Attempting to connect user before creating call...');
-          await this.initializeUser(authUser.id, authUser.email || authUser.id);
-          if (!this.currentUser) {
-            throw new Error('Failed to connect user after initialization attempt');
-          }
-        } else {
-          throw new Error('No authenticated user found');
-        }
-      } catch (initError) {
-        console.error('[AudioCallService] Failed to initialize user:', initError);
-        throw new Error('User not connected to Stream Video. Please initialize user first.');
-      }
+      throw new Error('User not connected to Stream Video. Please initialize user first.');
     }
 
     try {
       console.log('[AudioCallService] Creating audio call:', callId);
 
-      // Create database record for agent dashboard notification
+      // Create backend call-session record (same API family used by video)
       if (create) {
         try {
-          let authUser: any = getCachedUser();
-          if (!authUser) {
-            const validSession = await ensureValidSession();
-            authUser = validSession?.user || null;
-          }
-          // Removed getUser() fallback - ensureValidSession() is sufficient and avoids triggering SIGNED_OUT
-
-          if (authUser) {
-            const userName = this.currentUser?.name || authUser.email || authUser.user_metadata?.name || 'User';
-
-            let sessionId: string;
-            try {
-              sessionId = uuidv4();
-            } catch (uuidError) {
-              console.warn('[AudioCallService] UUID package failed, using fallback generator:', uuidError);
-              sessionId = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
-                const r = Math.random() * 16 | 0;
-                const v = c === 'x' ? r : (r & 0x3 | 0x8);
-                return v.toString(16);
-              });
-            }
-
-            const sessionData = {
-              id: sessionId,
-              call_type: 'audio_call',
-              mobile_user_id: authUser.id,
-              room_code: callId,
-              user_name: userName,
-              status: 'initiating',
-              agent_joined: false,
-              priority: 'high',
-              context_reason: 'User initiated audio call',
-              created_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            };
-
-            // Check for existing session
-            const { data: existingSession } = await supabase
-              .from('call_sessions')
-              .select('id, status, created_at')
-              .eq('room_code', callId)
-              .eq('call_type', 'audio_call')
-              .in('status', ['initiating', 'connecting', 'connected', 'active'])
-              .order('created_at', { ascending: false })
-              .limit(1)
-              .maybeSingle();
-
-            if (!existingSession) {
-              const { error: sessionError } = await supabase
-                .from('call_sessions')
-                .insert(sessionData)
-                .select()
-                .single();
-
-              if (sessionError) {
-                console.error('[AudioCallService] Failed to create call session in database:', sessionError);
-              } else {
-                console.log('[AudioCallService] Call session created in database successfully');
-              }
-            } else {
-              console.log('[AudioCallService] Call session already exists, skipping duplicate insert');
-            }
-          }
-        } catch (dbError) {
-          console.error('[AudioCallService] Exception creating database record:', dbError);
+          await initiateCallSession({
+            callType: CallType.AUDIO,
+            serviceType: CallServiceType.AUDIT_CALL,
+            priority: CallPriority.HIGH,
+            callId,
+          });
+        } catch (sessionError) {
+          console.error('[AudioCallService] Failed to create audio call session:', sessionError);
+          throw sessionError;
         }
       }
 
@@ -470,19 +343,12 @@ class AudioCallService {
         throw mediaErr;
       }
 
-      // Update database status to 'connected'
-      if (create && this.currentUser) {
+      // Update backend status to ACTIVE
+      if (create) {
         try {
-          await supabase
-            .from('call_sessions')
-            .update({
-              status: 'connected',
-              updated_at: new Date().toISOString()
-            })
-            .eq('room_code', callId)
-            .eq('call_type', 'audio_call');
+          await updateCallSessionStatus(callId, CallStatus.ACTIVE);
         } catch (updateErr) {
-          console.warn('[AudioCallService] Error updating call session status (non-critical):', updateErr);
+          console.warn('[AudioCallService] Error updating audio call status (non-critical):', updateErr);
         }
       }
 
@@ -507,20 +373,12 @@ class AudioCallService {
         await this.currentCall.leave();
         console.log('[AudioCallService] Audio call ended successfully');
 
-        // Update database status to 'ended'
+        // Update backend status to ended
         if (roomCode) {
           try {
-            await supabase
-              .from('call_sessions')
-              .update({
-                status: 'ended',
-                ended_at: new Date().toISOString(),
-                updated_at: new Date().toISOString()
-              })
-              .eq('room_code', roomCode)
-              .eq('call_type', 'audio_call');
+            await endCallSession(roomCode);
           } catch (dbError) {
-            console.error('[AudioCallService] Exception updating database on call end:', dbError);
+            console.error('[AudioCallService] Exception updating backend on call end:', dbError);
           }
         }
       } catch (error) {

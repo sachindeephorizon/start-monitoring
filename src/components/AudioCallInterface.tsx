@@ -26,10 +26,9 @@ import {
 import { MaterialIcons } from '@expo/vector-icons';
 import { audioCallService } from '@/services/audioCall.service';
 import { formatDuration } from '@/utils/time';
-import { getCachedUser } from '@/services/sessionCache';
-import { supabase, ensureValidSession } from '@/lib/supabase';
 import { useInCallAudio } from '@/hooks/useInCallAudio';
 import { backgroundCallNotificationService } from '@/services/backgroundCallNotification.service';
+import { useAuth } from '@/core/auth';
 
 interface AudioCallInterfaceProps {
   callId: string;
@@ -44,6 +43,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
   onCallEnd,
   onCallError,
 }) => {
+  const auth = useAuth();
   const [client, setClient] = useState<StreamVideoClient | null>(null);
   const [call, setCall] = useState<any>(null);
   const [isConnecting, setIsConnecting] = useState(true);
@@ -51,11 +51,14 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
   const [callDuration, setCallDuration] = useState(0);
   const [isMuted, setIsMuted] = useState(false);
   const [isSpeakerOn, setIsSpeakerOn] = useState(false);
-  const [callStatus, setCallStatus] = useState<'connecting' | 'connected' | 'ended'>('connecting');
+  const [callStatus, setCallStatus] = useState<'calling' | 'connected' | 'ended'>('calling');
 
-  const callStartTime = useRef(new Date());
   const durationInterval = useRef<NodeJS.Timeout | null>(null);
   const clientRef = useRef<StreamVideoClient | null>(null);
+  const callRef = useRef<any>(null);
+  const connectedSecondsRef = useRef(0);
+  const connectedSinceRef = useRef<number | null>(null);
+  const listenerCleanupRef = useRef<Array<() => void>>([]);
 
   // Use in-call audio hook for audio routing
   useInCallAudio(callStatus === 'connected', isSpeakerOn, 'audio_call');
@@ -64,37 +67,99 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
   useEffect(() => {
     initializeAudioCall();
 
-    // Start call duration timer
-    durationInterval.current = setInterval(() => {
-      const duration = Math.floor((Date.now() - callStartTime.current.getTime()) / 1000);
-      setCallDuration(duration);
-    }, 1000);
-
     return () => {
+      listenerCleanupRef.current.forEach((cleanup) => cleanup());
+      listenerCleanupRef.current = [];
       if (durationInterval.current) {
         clearInterval(durationInterval.current);
+        durationInterval.current = null;
       }
       // Best-effort: clear any ongoing call notification.
       backgroundCallNotificationService.dismissCallNotification(callId).catch(() => {});
       // Cleanup audio call service
-      if (call?.state.callingState !== CallingState.LEFT) {
-        call?.leave();
+      if (callRef.current?.state.callingState !== CallingState.LEFT) {
+        callRef.current?.leave();
       }
     };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  const clearDurationTimer = () => {
+    if (durationInterval.current) {
+      clearInterval(durationInterval.current);
+      durationInterval.current = null;
+    }
+  };
+
+  const updateDuration = () => {
+    if (connectedSinceRef.current == null) {
+      setCallDuration(connectedSecondsRef.current);
+      return;
+    }
+
+    const liveSeconds = Math.floor((Date.now() - connectedSinceRef.current) / 1000);
+    setCallDuration(connectedSecondsRef.current + liveSeconds);
+  };
+
+  const startDurationTimer = () => {
+    clearDurationTimer();
+    updateDuration();
+    durationInterval.current = setInterval(updateDuration, 1000);
+  };
+
+  const getParticipants = (callInstance: any): any[] => {
+    const rawParticipants = (callInstance?.state as any)?.participants;
+
+    if (Array.isArray(rawParticipants)) {
+      return rawParticipants.filter(Boolean);
+    }
+
+    if (rawParticipants && typeof rawParticipants === 'object') {
+      return Object.values(rawParticipants).filter(Boolean);
+    }
+
+    return [];
+  };
+
+  const hasRemoteAgentConnected = (callInstance: any, localUserId: string): boolean => {
+    const participants = getParticipants(callInstance);
+
+    return participants.some((participant: any) => {
+      const participantUserId = participant?.userId || participant?.user?.id;
+      const isLocal = participant?.isLocalParticipant === true || participantUserId === localUserId;
+      return !isLocal;
+    });
+  };
+
+  const syncAgentConnectionState = (isAgentConnected: boolean) => {
+    if (isAgentConnected) {
+      if (connectedSinceRef.current == null) {
+        connectedSinceRef.current = Date.now();
+      }
+      setCallStatus('connected');
+      startDurationTimer();
+      return;
+    }
+
+    if (connectedSinceRef.current != null) {
+      const sessionSeconds = Math.floor((Date.now() - connectedSinceRef.current) / 1000);
+      connectedSecondsRef.current += Math.max(sessionSeconds, 0);
+      connectedSinceRef.current = null;
+    }
+
+    clearDurationTimer();
+    setCallDuration(connectedSecondsRef.current);
+    if (callStatus !== 'ended') {
+      setCallStatus('calling');
+    }
+  };
+
   const initializeAudioCall = async () => {
     try {
       setIsConnecting(true);
-      setCallStatus('connecting');
+      setCallStatus('calling');
       console.log('[AudioCallInterface] Initializing dedicated audio call...');
 
-      // Get authenticated user
-      let authUser: any = getCachedUser();
-      if (!authUser) {
-        const validSession = await ensureValidSession();
-        authUser = validSession?.user || null;
-      }
+      const authUser = auth.user;
       if (!authUser) {
         throw new Error('No authenticated user found - cannot start audio call');
       }
@@ -118,8 +183,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
           streamClient = audioCallService.getClient();
         } else {
           console.log('[AudioCallInterface] User already connected:', currentUser.id);
-          const sanitizedAuthId = actualUserId.replace(/[@.]/g, '_').replace(/[^a-zA-Z0-9@_-]/g, '').toLowerCase() + '_audio';
-          if (currentUser.id !== sanitizedAuthId) {
+          if (currentUser.id !== actualUserId) {
             console.log('[AudioCallInterface] User ID mismatch, reconnecting...');
             await audioCallService.initializeUser(actualUserId, userName);
             streamClient = audioCallService.getClient();
@@ -135,25 +199,45 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
       const callInstance = await audioCallService.createAudioCall(callId, true);
       console.log('[AudioCallInterface] Audio call instance created:', callId);
 
+      const evaluateConnectionState = () => {
+        const isAgentConnected = hasRemoteAgentConnected(callInstance, actualUserId);
+        syncAgentConnectionState(isAgentConnected);
+
+        if (isAgentConnected) {
+          backgroundCallNotificationService.showCallNotification(callId, userName, false).catch(() => {});
+        }
+      };
+
+      const registerListener = (eventName: string, handler: (event: any) => void) => {
+        const subscription = callInstance.on(eventName as any, handler);
+        if (typeof subscription === 'function') {
+          listenerCleanupRef.current.push(subscription);
+        } else if (subscription && typeof (subscription as any).unsubscribe === 'function') {
+          listenerCleanupRef.current.push(() => (subscription as any).unsubscribe());
+        }
+      };
+
       // Set up call state listeners
-      callInstance.on('call.updated', (event) => {
+      registerListener('call.updated', (event) => {
         console.log('[AudioCallInterface] Call state updated:', event);
-        setCallStatus('connected');
-        backgroundCallNotificationService.showCallNotification(callId, userName, false).catch(() => {});
+        evaluateConnectionState();
       });
 
       // Listen for participant changes
-      callInstance.on('call.session_participant_joined', (event) => {
+      registerListener('call.session_participant_joined', (event) => {
         console.log('[AudioCallInterface] Participant joined:', event.participant);
+        evaluateConnectionState();
       });
 
-      callInstance.on('call.session_participant_left', (event) => {
+      registerListener('call.session_participant_left', (event) => {
         console.log('[AudioCallInterface] Participant left:', event.participant);
+        evaluateConnectionState();
       });
 
       setCall(callInstance);
+      callRef.current = callInstance;
       setIsConnecting(false);
-      setCallStatus('connected');
+      evaluateConnectionState();
     } catch (e: any) {
       console.error('[AudioCallInterface] Failed to initialize audio call:', e);
       setError(e.message || 'Failed to initialize audio call');
@@ -187,6 +271,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
         await audioCallService.endCall();
         console.log('[AudioCallInterface] Audio call ended');
         setCallStatus('ended');
+        clearDurationTimer();
       } catch (error) {
         console.error('[AudioCallInterface] Error ending audio call:', error);
       }
@@ -266,8 +351,8 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
               <View style={styles.statusIndicator}>
                 <View style={[styles.statusDot, { backgroundColor: callStatus === 'connected' ? '#4CAF50' : '#FFA500' }]} />
                 <Text style={styles.statusText}>
-                  {callStatus === 'connecting' ? 'Connecting...' :
-                   callStatus === 'connected' ? 'Connected' : 'Ended'}
+                  {callStatus === 'connected' ? 'Agent connected' :
+                   callStatus === 'calling' ? 'Calling...' : 'Ended'}
                 </Text>
               </View>
               <Text style={styles.durationText}>{formatDuration(callDuration)}</Text>
@@ -281,7 +366,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
               <Text style={styles.agentName}>Security Agent</Text>
               <Text style={styles.callTypeText}>Audio Call</Text>
               <Text style={styles.connectionText}>
-                {callStatus === 'connected' ? 'Connected to agent' : 'Connecting to agent...'}
+                {callStatus === 'connected' ? 'Agent connected' : 'Calling...'}
               </Text>
             </View>
 

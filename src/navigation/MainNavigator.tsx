@@ -23,12 +23,13 @@ import EmergencyContactsScreen from '@/screens/EmergencyContactsScreen';
 import TrialExpiredScreen from '@/screens/TrialExpiredScreen';
 import PoliciesScreen from '@/screens/PoliciesScreen';
 import CheckInScreen from '@/screens/CheckInScreen';
-import ChatScreen from '@/screens/ChatScreen';
+import ChatScreen from '../screens/ChatScreen';
 import EmergencyScreen from '@/screens/EmergencyScreen';
 import TrackingScreen from '@/screens/TrackingScreen';
 import ScheduleCheckInScreen from '@/screens/ScheduleCheckInScreen';
 import BookBodyguardScreen from '@/screens/BookBodyguardScreen';
 import VideoMonitorScreen from '@/screens/VideoMonitorScreen';
+import AudioCallScreen from '@/screens/AudioCallScreen';
 
 const Stack = createStackNavigator();
 
@@ -44,14 +45,14 @@ export type MainStackParamList = {
   Policies: undefined;
   Emergency: { emergencyId?: string };
   CheckIn: { checkInId?: string };
-  Chat: { chatRequestId: string };
+  Chat: { chatRequestId?: string } | undefined;
   Tracking: undefined;
   ScheduleCheckIn: undefined;
   BookBodyguard: undefined;
   VideoMonitor: undefined;
+  AudioCall: { callId?: string; userName?: string } | undefined;
   // TODO: Add these when screens are implemented
   // VideoCall: { sessionId: string; roomCode: string };
-  // AudioCall: { sessionId: string; roomCode: string };
 };
 
 const NAVIGATE_TO_PLANS_KEY = '@navigate_to_subscription_plans';
@@ -132,6 +133,7 @@ export function MainNavigator() {
       <Stack.Screen name="ScheduleCheckIn" component={ScheduleCheckInScreen} />
       <Stack.Screen name="BookBodyguard" component={BookBodyguardScreen} />
       <Stack.Screen name="VideoMonitor" component={VideoMonitorScreen} />
+      <Stack.Screen name="AudioCall" component={AudioCallScreen} />
     </Stack.Navigator>
   );
 }

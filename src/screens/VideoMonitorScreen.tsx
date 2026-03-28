@@ -14,6 +14,7 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { Camera } from 'expo-camera';
 import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
+import AudioCallScreen from '@/screens/AudioCallScreen';
 import { useAuth } from '@/core/auth';
 import { simpleCallService, SimpleCallSession } from '@/services/simpleCall.service';
 import { setCallPriorityActive } from '@/services/callPriority';
@@ -64,9 +65,6 @@ const VideoMonitorScreen: React.FC = () => {
 				const timestamp = Date.now();
 				const shortUserId = user.id.substring(0, 8);
 				const callId = `audio-${shortUserId}-${timestamp}`;
-
-				// Create audio call (this will create the database record and Stream call)
-				await audioCallService.createAudioCall(callId, true);
 
 				// Create session object for UI
 				const session: SimpleCallSession = {
@@ -244,7 +242,11 @@ const VideoMonitorScreen: React.FC = () => {
 
 	return (
 		<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
-			{showCall && callSession && !isAudioCall ? (
+			{showCall && callSession && isAudioCall ? (
+				<View style={styles.callContainer}>
+					<AudioCallScreen />
+				</View>
+			) : showCall && callSession && !isAudioCall ? (
 				<View style={styles.callContainer}>
 					<Suspense fallback={
 						<View style={styles.callFallback}>
