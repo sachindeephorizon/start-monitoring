@@ -5,7 +5,7 @@
  * This is a pure UI component with no background processing.
  */
 
-import React, { useState, Suspense, useRef, useEffect, useCallback } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -17,7 +17,6 @@ import {
   Platform,
   StatusBar,
   Alert,
-  ActivityIndicator,
   Animated,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -26,8 +25,6 @@ import { EmergencyButton } from '@/components/emergency';
 import { layoutStyles } from '@/styles/Layout.styles';
 import { serviceCardStyles } from '@/styles/ServiceCard.styles';
 import { emergencyStyles } from '@/styles/Emergency.styles';
-import VideoMonitorModal from '@/components/modals/VideoMonitorModal';
-import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
 import AudioCallInterface from '@/components/AudioCallInterface';
 import ChatBox from '@/components/chat/ChatBox';
 import SlideMenu from '@/components/navigation/SlideMenu';
@@ -75,13 +72,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   });
   const isSirenActive = siren.isActive;
   
-  // Video monitoring state
-  const [activeService, setActiveService] = useState<string | null>(null);
-  const [isMonitoring, setIsMonitoring] = useState(false);
-  const [cameraFacing, setCameraFacing] = useState<'front' | 'back'>('front');
-  const [isMuted, setIsMuted] = useState(false);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
-  
   // Call state
   const [showCall, setShowCall] = useState(false);
   const [callSession, setCallSession] = useState<SimpleCallSession | null>(null);
@@ -103,19 +93,19 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const [isEmergencyProcessing, setIsEmergencyProcessing] = useState(false);
   const emergencyResponseInFlightRef = useRef(false);
 
-  // ✅ Auto-open service modal from notification routing.
+  // ✅ Auto-open service route from notification routing.
   // When a tracking_checkin notification is tapped, the router navigates to
   // Home with { openService: 'tracking' }. This effect reads that param and
-  // auto-opens the LocationTrackingModal so useTrackingSession can detect
-  // the missed check-in and show the passkey modal.
+  // forwards to the correct screen so useTrackingSession can detect the
+  // missed check-in and show the passkey modal.
   useEffect(() => {
     const params = route.params as any;
     if (params?.openService) {
       const service = params.openService;
       if (service === Service.TRACKING) {
         (navigation as any).navigate('Tracking');
-      } else {
-        setActiveService(service);
+      } else if (service === Service.VIDEO) {
+        (navigation as any).navigate('VideoMonitor');
       }
       // Clear param so it doesn't re-trigger on re-render or focus
       navigation.setParams({ openService: undefined } as any);
@@ -164,8 +154,8 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         const service = pending.params.openService;
         if (service === Service.TRACKING) {
           (navigation as any).navigate('Tracking');
-        } else {
-          setActiveService(service);
+        } else if (service === Service.VIDEO) {
+          (navigation as any).navigate('VideoMonitor');
         }
       } else if (pending.screen && pending.screen !== 'Home') {
         // Different screen — navigate (e.g. CheckIn screen from check_in notification)
@@ -286,8 +276,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         setCallSession(session);
         setIsAudioCall(true);
         setShowCall(true);
-        setActiveService(null);
-        setIsMonitoring(false);
         
         console.log('[HomeScreen] Audio call started:', callId);
       } else {
@@ -304,8 +292,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         setCallSession(session);
         setIsAudioCall(false);
         setShowCall(true);
-        setActiveService(null);
-        setIsMonitoring(true);
         
         console.log('[HomeScreen] Video call started:', session.roomCode);
       }
@@ -687,8 +673,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
 
   const handleServicePress = (service: string) => {
     if (service === 'Video Monitor Me') {
-      // Open modal immediately (no delay). Modal itself will verify subscription access.
-      setActiveService(Service.VIDEO);
+      (navigation as any).navigate('VideoMonitor');
     } else if (service === 'Track Me On The Go') {
       (navigation as any).navigate('Tracking');
     } else if (service === 'Schedule Check In') {
@@ -715,31 +700,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   }, []);
   
   
-  // Handle start monitoring
-  const handleStartMonitoring = async () => {
-    try {
-      // Check camera permission
-      if (!cameraPermission) {
-        const { status } = await Camera.requestCameraPermissionsAsync();
-        if (status !== 'granted') {
-          Alert.alert(
-            'Camera Permission Required',
-            'Please grant camera permission to start video monitoring.',
-            [{ text: 'OK' }]
-          );
-          return;
-        }
-        setCameraPermission(true);
-      }
-      
-      // Start video call
-      await startCall('video', 'Video monitoring session');
-    } catch (error) {
-      console.error('[HomeScreen] Error starting monitoring:', error);
-      Alert.alert('Error', 'Failed to start video monitoring');
-    }
-  };
-  
   // Handle end video session
   const handleEndVideoSession = async () => {
     if (callSession) {
@@ -755,7 +715,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     setShowCall(false);
     setCallSession(null);
     setIsAudioCall(false);
-    setIsMonitoring(false);
     setCallPriorityActive(false);
   };
   
@@ -1076,23 +1035,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
             </TouchableOpacity>
           </View>
         </ScrollView>
-        
-        {/* Video Monitor Modal */}
-        <VideoMonitorModal
-          visible={activeService === Service.VIDEO && !showCall}
-          isMonitoring={isMonitoring && !showCall}
-          cameraPermission={cameraPermission}
-          cameraFacing={cameraFacing}
-          isMuted={isMuted}
-          isVideoEnabled={isVideoEnabled}
-          onClose={() => setActiveService(null)}
-          onStartMonitoring={handleStartMonitoring}
-          onSetCameraFacing={setCameraFacing}
-          onSetIsMuted={setIsMuted}
-          onSetIsVideoEnabled={setIsVideoEnabled}
-          onSetIsMonitoring={setIsMonitoring}
-          onEndVideoSession={handleEndVideoSession}
-        />
         
         {/* Audio Call Interface - Full Screen */}
         {showCall && callSession && isAudioCall && (

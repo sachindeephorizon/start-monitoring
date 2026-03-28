@@ -5,7 +5,6 @@
  * Adapted from old app for new app architecture.
  */
 import { VideoCallService } from '@/features/video/video.service';
-import { useAuth } from '@/core/auth';
 
 export interface SimpleCallSession {
   id: string;
@@ -45,10 +44,8 @@ class SimpleCallService {
     config: SimpleCallConfig,
     options?: { sessionId?: string; roomCode?: string; userId?: string }
   ): Promise<SimpleCallSession> {
-    const sessionId = options?.sessionId || this.generateUUID();
-    const userName = 'User';
-
-    // Create call session using VideoCallService
+    // Create session — the callSessionId returned IS the Stream room code.
+    // No second round-trip to fetch the room code is necessary.
     const result = await VideoCallService.createCallSession(
       undefined, // agentId
       config.reason,
@@ -59,17 +56,11 @@ class SimpleCallService {
       throw new Error(result.error || 'Failed to create call session');
     }
 
-    // Get call session to get room code
-    const session = await VideoCallService.getCallSession(result.callSessionId);
-    if (!session) {
-      throw new Error('Failed to retrieve call session');
-    }
-
     const simpleSession: SimpleCallSession = {
       id: result.callSessionId,
       callType: config.callType,
-      roomCode: session.room_code,
-      userName: userName,
+      roomCode: result.callSessionId,
+      userName: config.userName || 'User',
       status: 'active',
       createdAt: new Date().toISOString(),
     };
