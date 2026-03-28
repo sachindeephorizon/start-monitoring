@@ -266,7 +266,7 @@ export type RootStackParamList = {
   Family: undefined;
   Emergency: { emergencyId?: string };
   CheckIn: { checkInId?: string };
-  Chat: { chatRequestId?: string } | undefined;
+  Chat: { chatRequestId?: string; threadId?: string } | undefined;
   EmergencyContacts: undefined;
   TrialExpired: undefined;
   Policies: undefined;

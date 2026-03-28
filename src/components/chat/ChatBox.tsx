@@ -96,9 +96,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({
   // Scroll to bottom when new messages arrive or typing indicator appears
   useEffect(() => {
     if (visible && (chatMessages.length > 0 || isTyping)) {
-      // Avoid setTimeout on iOS (can be throttled). Use rAF to align with layout.
+      // Snap to bottom immediately to avoid visible jump from top to bottom.
       requestAnimationFrame(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
+        scrollViewRef.current?.scrollToEnd({ animated: false });
       });
     }
   }, [chatMessages.length, isTyping, visible]);
@@ -200,15 +200,24 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="interactive"
+            onContentSizeChange={() => {
+              if (!visible) {
+                return;
+              }
+
+              requestAnimationFrame(() => {
+                scrollViewRef.current?.scrollToEnd({ animated: false });
+              });
+            }}
           >
-            {chatMessages.map((message, idx) => {
+              {chatMessages.map((message) => {
               const isSystem = message.sender === 'system' || message.messageType === 'SYSTEM';
 
               if (isSystem) {
                 const systemText = message.text || getSystemEventText(message.systemEvent);
                 return (
                   <View
-                    key={`${message.id}-${idx}`}
+                      key={message.id}
                     style={[styles.chatMessageBubble, styles.chatSystemMessageWrap]}
                   >
                     <View style={styles.chatSystemMessageBubble}>
@@ -223,7 +232,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
 
               return (
                 <View
-                  key={`${message.id}-${idx}`}
+                  key={message.id}
                   style={[
                     styles.chatMessageBubble,
                     message.sender === 'user' ? styles.chatUserMessage : styles.chatAgentMessage
@@ -271,7 +280,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                   key={response}
                   style={styles.chatQuickResponseButton}
                   onPress={() => handleQuickResponse(response)}
-                  disabled={threadStatus === 'RESOLVED' || threadStatus === 'CLOSED' || isSending}
+                  disabled={!!isSending}
                 >
                   <Text style={styles.chatQuickResponseText}>{response}</Text>
                 </TouchableOpacity>
@@ -284,14 +293,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             <View style={styles.chatInputWrapper}>
               <TextInput
                 style={styles.chatInput}
-                placeholder="Type a message..."
+                placeholder={threadStatus === 'RESOLVED' || threadStatus === 'CLOSED' ? 'Type to start a new chat...' : 'Type a message...'}
                 placeholderTextColor="#bdc3c7"
                 value={chatInput}
                 onChangeText={onChatInputChange}
                 multiline={true}
                 maxLength={500}
                 textAlignVertical="top"
-                editable={threadStatus !== 'RESOLVED' && threadStatus !== 'CLOSED'}
+                editable={true}
                 accessible={true}
                 accessibilityLabel="Message input"
                 accessibilityHint="Type a message to your security agent"
@@ -309,7 +318,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                 onPress={() => {
                   if (chatInput.trim()) onSendMessage(chatInput.trim());
                 }}
-                disabled={!chatInput.trim() || isSending || threadStatus === 'RESOLVED' || threadStatus === 'CLOSED'}
+                disabled={!chatInput.trim() || !!isSending}
                 accessible={true}
                 accessibilityLabel="Send message"
                 accessibilityRole="button"

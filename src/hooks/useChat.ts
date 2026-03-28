@@ -44,6 +44,10 @@ export interface UseChatReturn {
   resolveActiveThread: () => Promise<void>;
 }
 
+export interface UseChatOptions {
+  initialThreadId?: string;
+}
+
 const isAxiosErrorWithStatus = (
   error: unknown,
 ): error is AxiosError & { response: { status: number } } => {
@@ -80,7 +84,8 @@ const mapMessageToUi = (
   };
 };
 
-export function useChat(): UseChatReturn {
+export function useChat(options?: UseChatOptions): UseChatReturn {
+  const initialThreadId = options?.initialThreadId;
   const { isAuthReady, user, signOut } = useAuth();
   const socketBaseUrl = (
     process.env.EXPO_PUBLIC_WEBSOCKET_URL ||
@@ -96,10 +101,15 @@ export function useChat(): UseChatReturn {
   const [hasAssignedAgent, setHasAssignedAgent] = useState(false);
   const hasConnectedOnceRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
 
   useEffect(() => {
     activeThreadIdRef.current = activeThreadId;
   }, [activeThreadId]);
+
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
   const handleError = useCallback(async (err: unknown, fallbackMessage: string) => {
     if (isAxiosErrorWithStatus(err) && err.response.status === 401) {
@@ -150,8 +160,7 @@ export function useChat(): UseChatReturn {
         return withoutTemp;
       }
 
-      const replaced = prev.map((item) => (item.id === tempId ? confirmed : item));
-      return replaced.sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
+      return prev.map((item) => (item.id === tempId ? confirmed : item));
     });
   }, []);
 
@@ -161,17 +170,59 @@ export function useChat(): UseChatReturn {
     setHasAssignedAgent(!!thread?.currentAgentId);
   }, []);
 
+  const waitForAgentAssignment = useCallback(async (
+    threadId: string,
+    timeoutMs = 30000,
+    intervalMs = 1500,
+  ): Promise<boolean> => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const thread = await getThreadDetails(threadId);
+      const assigned = !!thread?.currentAgentId;
+
+      setThreadStatus(thread?.status ?? null);
+      setHasAssignedAgent(assigned);
+
+      if (assigned) {
+        return true;
+      }
+
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    return false;
+  }, []);
+
   const ensureThread = useCallback(async (): Promise<string> => {
     if (activeThreadId) {
-      return activeThreadId;
+      if (threadStatus === 'OPEN') {
+        return activeThreadId;
+      }
+
+      // Guard against stale local status: verify current thread on backend before creating a new one.
+      const existingThread = await getThreadDetails(activeThreadId).catch(() => null);
+      if (existingThread?.status === 'OPEN') {
+        setThreadStatus(existingThread.status);
+        setHasAssignedAgent(!!existingThread.currentAgentId);
+        return activeThreadId;
+      }
     }
 
     const thread = await createOrGetActiveThread();
+    const didSwitchThread = thread.id !== activeThreadIdRef.current;
+
     setActiveThreadId(thread.id);
     setThreadStatus(thread.status);
     setHasAssignedAgent(!!thread.currentAgentId);
+
+    if (didSwitchThread) {
+      setMessages([]);
+      setUnreadCount(0);
+    }
+
     return thread.id;
-  }, [activeThreadId]);
+  }, [activeThreadId, threadStatus]);
 
   const initializeChat = useCallback(async () => {
     if (!isAuthReady) {
@@ -182,6 +233,22 @@ export function useChat(): UseChatReturn {
     setError(null);
 
     try {
+      if (initialThreadId) {
+        const requestedThread = await getThreadDetails(initialThreadId);
+        if (requestedThread) {
+          setActiveThreadId(requestedThread.id);
+          setThreadStatus(requestedThread.status);
+          setHasAssignedAgent(!!requestedThread.currentAgentId);
+
+          await Promise.all([
+            loadMessages(requestedThread.id),
+            refreshThreadState(requestedThread.id),
+          ]);
+
+          return;
+        }
+      }
+
       const thread = await createOrGetActiveThread();
       setActiveThreadId(thread.id);
       setThreadStatus(thread.status);
@@ -196,7 +263,7 @@ export function useChat(): UseChatReturn {
     } finally {
       setLoading(false);
     }
-  }, [handleError, isAuthReady, loadMessages, refreshThreadState]);
+  }, [handleError, initialThreadId, isAuthReady, loadMessages, refreshThreadState]);
 
   useEffect(() => {
     initializeChat();
@@ -330,17 +397,42 @@ export function useChat(): UseChatReturn {
     }
 
     let tempMessageId = '';
+    const currentThreadId = activeThreadIdRef.current;
+    const wasResolvedOrClosed = threadStatus === 'RESOLVED' || threadStatus === 'CLOSED';
+    const canSendImmediately = !!currentThreadId && threadStatus === 'OPEN' && !wasResolvedOrClosed;
 
     try {
       setError(null);
-      const threadId = await ensureThread();
+      const threadId = canSendImmediately
+        ? currentThreadId
+        : await ensureThread();
+
+      if (wasResolvedOrClosed) {
+        const waitingMessageId = `system-waiting-agent-${threadId}-${Date.now()}`;
+        appendMessageIfMissing({
+          id: waitingMessageId,
+          text: 'Starting a new chat. Waiting for an agent to connect...',
+          sender: 'system',
+          timestamp: new Date(),
+          messageType: 'SYSTEM',
+          systemEvent: null,
+        });
+
+        const isAssigned = await waitForAgentAssignment(threadId);
+        if (!isAssigned) {
+          throw new Error('No agent connected yet. Please try again in a moment.');
+        }
+      }
+
+      const latestTimestamp = messagesRef.current[messagesRef.current.length - 1]?.timestamp?.getTime() ?? 0;
+      const optimisticTimestamp = new Date(Math.max(Date.now(), latestTimestamp + 1));
 
       tempMessageId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
       appendMessageIfMissing({
         id: tempMessageId,
         text: trimmed,
         sender: 'user',
-        timestamp: new Date(),
+        timestamp: optimisticTimestamp,
         messageType: 'TEXT',
         systemEvent: null,
       });
@@ -356,10 +448,10 @@ export function useChat(): UseChatReturn {
       if (tempMessageId) {
         setMessages((prev) => prev.filter((item) => item.id !== tempMessageId));
       }
-      await handleError(err, 'Unable to send message, try again');
+      await handleError(err, err instanceof Error ? err.message : 'Unable to send message, try again');
       throw err;
     }
-  }, [appendMessageIfMissing, ensureThread, handleError, refreshThreadState, replaceOptimisticMessage, user?.id]);
+  }, [appendMessageIfMissing, ensureThread, handleError, refreshThreadState, replaceOptimisticMessage, threadStatus, user?.id, waitForAgentAssignment]);
 
   const refreshMessages = useCallback(async () => {
     try {

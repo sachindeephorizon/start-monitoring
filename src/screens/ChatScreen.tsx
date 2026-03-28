@@ -1,13 +1,19 @@
 import React, { useCallback, useState } from 'react';
 import { Alert } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import ChatBox from '@/components/chat/ChatBox';
 import { useChat } from '@/hooks/useChat';
 import { formatChatTime } from '@/utils/chat';
 
 export default function ChatScreen() {
   const navigation = useNavigation();
-  const chat = useChat();
+  const route = useRoute<any>();
+  const routeThreadId = typeof route.params?.threadId === 'string'
+    ? route.params.threadId
+    : typeof route.params?.chatRequestId === 'string'
+      ? route.params.chatRequestId
+      : undefined;
+  const chat = useChat({ initialThreadId: routeThreadId });
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [isResolvingChat, setIsResolvingChat] = useState(false);
@@ -17,10 +23,6 @@ export default function ChatScreen() {
   }, [navigation]);
 
   const handleSendMessage = useCallback(async (text?: string) => {
-    if (chat.threadStatus === 'RESOLVED' || chat.threadStatus === 'CLOSED') {
-      return;
-    }
-
     const content = (text || chatInput).trim();
     if (!content || isSendingChat) {
       return;
@@ -38,7 +40,7 @@ export default function ChatScreen() {
     } finally {
       setIsSendingChat(false);
     }
-  }, [chat.threadStatus, chatInput, chat.sendMessage, isSendingChat]);
+  }, [chatInput, chat.sendMessage, isSendingChat]);
 
   const handleResolveChat = useCallback(async () => {
     if (isResolvingChat || chat.threadStatus !== 'OPEN') {
@@ -72,8 +74,6 @@ export default function ChatScreen() {
     );
   }, [chat.resolveActiveThread, chat.threadStatus, isResolvingChat]);
 
-  const isChatDisabled = chat.threadStatus === 'RESOLVED' || chat.threadStatus === 'CLOSED';
-
   return (
     <ChatBox
       visible={true}
@@ -86,7 +86,7 @@ export default function ChatScreen() {
       isResolving={isResolvingChat}
       onClose={handleClose}
       onChatInputChange={setChatInput}
-      onSendMessage={isChatDisabled ? () => {} : handleSendMessage}
+      onSendMessage={handleSendMessage}
       onResolveChat={handleResolveChat}
       formatChatTime={formatChatTime}
     />

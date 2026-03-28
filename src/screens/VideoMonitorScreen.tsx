@@ -11,7 +11,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { Camera } from 'expo-camera';
 import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
 import AudioCallScreen from '@/screens/AudioCallScreen';
@@ -23,7 +23,10 @@ import { styles as videoMonitorStyles } from '@/components/modals/VideoMonitorMo
 
 const VideoMonitorScreen: React.FC = () => {
 	const navigation = useNavigation();
+	const route = useRoute<any>();
 	const auth = useAuth();
+	const incomingCallId = typeof route.params?.callId === 'string' ? route.params.callId : null;
+	const incomingUserName = typeof route.params?.userName === 'string' ? route.params.userName : null;
 	const [activeService, setActiveService] = useState<string | null>(Service.VIDEO);
 	const [isStartingCall, setIsStartingCall] = useState(false);
 	const [cameraPermission, setCameraPermission] = useState(false);
@@ -36,11 +39,13 @@ const VideoMonitorScreen: React.FC = () => {
 	const [showCall, setShowCall] = useState(false);
 	const [callSession, setCallSession] = useState<SimpleCallSession | null>(null);
 	const [isAudioCall, setIsAudioCall] = useState(false);
+	const [joinExistingCall, setJoinExistingCall] = useState(false);
 	const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
 
 	const startCall = useCallback(async (callType: 'video' | 'audio', reason: string) => {
 		try {
 			setIsStartingCall(true);
+			setJoinExistingCall(false);
 			setCallPriorityActive(true);
 
 			// ensureValidSession() already refreshes expired tokens
@@ -119,6 +124,30 @@ const VideoMonitorScreen: React.FC = () => {
 			setCallPriorityActive(false); // Reset priority flag on error too
 		}
 	}, [auth.user]);
+
+	useEffect(() => {
+		if (!auth.isAuthReady || !auth.user?.id || !incomingCallId || showCall) {
+			return;
+		}
+
+		const resolvedUserName = incomingUserName || auth.user.name || auth.user.email || 'User';
+		const incomingSession: SimpleCallSession = {
+			id: incomingCallId,
+			callType: 'video',
+			roomCode: incomingCallId,
+			userName: resolvedUserName,
+			status: 'active',
+			createdAt: new Date().toISOString(),
+		};
+
+		setCallSession(incomingSession);
+		setIsAudioCall(false);
+		setJoinExistingCall(true);
+		setShowCall(true);
+		setActiveService(null);
+		setIsMonitoring(true);
+		console.log('[VideoMonitorScreen] Joining incoming call directly:', incomingCallId);
+	}, [auth.isAuthReady, auth.user, incomingCallId, incomingUserName, showCall]);
 
 	React.useEffect(() => {
 		const checkPermission = async () => {
@@ -215,6 +244,7 @@ const VideoMonitorScreen: React.FC = () => {
 		setShowCall(false);
 		setCallSession(null);
 		setIsAudioCall(false);
+		setJoinExistingCall(false);
 		setIsMonitoring(false);
 		setCallPriorityActive(false);
 	};
@@ -257,6 +287,7 @@ const VideoMonitorScreen: React.FC = () => {
 						<StreamVideoCallDedicated
 							callId={callSession.roomCode}
 							userName={callSession.userName}
+							createCallIfMissing={!joinExistingCall}
 							onCallEnd={handleCallEnd}
 							onCallError={handleCallError}
 						/>

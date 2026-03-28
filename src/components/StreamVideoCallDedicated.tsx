@@ -31,6 +31,7 @@ import { useAuth } from '@/core/auth';
 interface StreamVideoCallDedicatedProps {
   callId: string;
   userName: string;
+  createCallIfMissing?: boolean;
   onCallEnd: () => void;
   onCallError: (error: string) => void;
 }
@@ -94,6 +95,7 @@ const StreamCallGate: React.FC<StreamCallGateProps> = ({
 const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
   callId,
   userName,
+  createCallIfMissing = true,
   onCallEnd,
   onCallError,
 }) => {
@@ -739,7 +741,11 @@ const StreamVideoCallDedicated: React.FC<StreamVideoCallDedicatedProps> = ({
 
           // Join call (service handles retries).
           if (CALL_TRACE) logger.log('[CallTrace] createVideoCall start', Date.now() - traceT0Ref.current);
-          const callInstance = await streamVideoServiceDedicated.createVideoCall(callId, true, preCreated);
+          const callInstance = await streamVideoServiceDedicated.createVideoCall(
+            callId,
+            createCallIfMissing,
+            preCreated,
+          );
           if (CALL_TRACE) logger.log('[CallTrace] createVideoCall ok', Date.now() - traceT0Ref.current);
           callRef.current = callInstance;
           setCall(callInstance);

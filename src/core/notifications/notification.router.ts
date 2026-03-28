@@ -120,9 +120,13 @@ export function routeFromNotification(payload: PushPayload, notificationId?: str
       }
 
       case 'incoming_call': {
-        // TODO: VideoCall/AudioCall screens not yet implemented as Stack.Screen routes.
-        console.warn('[Notification Router] Call notification — routing to Home (call screens pending)');
-        navigateToMainScreen('Home', undefined, notificationId);
+        const callId = payload.call_id || payload.entity_id;
+        console.log('[Notification Router] Incoming call notification — routing to VideoMonitor', {
+          callId,
+        });
+        // NOTE: The current app's implemented video call entry screen is `VideoMonitor`.
+        // If/when a dedicated `VideoCall` route is added, update this mapping.
+        navigateToMainScreen('VideoMonitor', callId ? { callId } : undefined, notificationId);
         break;
       }
 
@@ -136,12 +140,8 @@ export function routeFromNotification(payload: PushPayload, notificationId?: str
       }
 
       case 'chat': {
-        const chatRequestId = payload.chat_id || payload.entity_id;
-        if (chatRequestId) {
-          navigateToMainScreen('Chat', { chatRequestId }, notificationId);
-        } else {
-          navigateToMainScreen('Home', undefined, notificationId);
-        }
+        const threadId = payload.thread_id || payload.chat_id || payload.entity_id;
+        navigateToMainScreen('Chat', threadId ? { threadId } : undefined, notificationId);
         break;
       }
 

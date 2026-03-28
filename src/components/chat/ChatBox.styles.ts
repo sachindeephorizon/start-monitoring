@@ -106,6 +106,8 @@ export const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
   },
   chatMessagesContent: {
+    flexGrow: 1,
+    justifyContent: 'flex-end',
     padding: 16,
     paddingBottom: 20,
   },
