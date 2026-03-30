@@ -128,7 +128,7 @@ const SlideMenu: React.FC<SlideMenuProps> = ({
           </View>
 
           <TouchableOpacity onPress={onClose} style={styles.slideMenuClose}>
-            <MaterialIcons name="close" size={22} color="#2C3E50" />
+            <MaterialIcons name="close" size={22} color="#ffffff" />
           </TouchableOpacity>
         </View>
 

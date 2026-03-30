@@ -6,7 +6,7 @@ export const styles = StyleSheet.create({
     backgroundColor: '#f8f9fa',
   },
   chatHeader: {
-    backgroundColor: '#4DA8DA',
+    backgroundColor: '#213160',
     paddingTop: 10,
     paddingBottom: 16,
     paddingHorizontal: 16,
@@ -240,7 +240,7 @@ export const styles = StyleSheet.create({
   },
   chatQuickResponseText: {
     fontSize: 14,
-    color: '#4DA8DA',
+    color: '#213160',
     fontWeight: '500',
   },
   chatInputContainer: {
@@ -275,9 +275,9 @@ export const styles = StyleSheet.create({
     borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#bdc3c7',
+    backgroundColor: '#545454',
   },
   chatSendButtonActive: {
-    backgroundColor: '#4DA8DA',
+    backgroundColor: '#213160',
   },
 });
