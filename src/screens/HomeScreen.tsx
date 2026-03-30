@@ -25,8 +25,6 @@ import { EmergencyButton } from '@/components/emergency';
 import { layoutStyles } from '@/styles/Layout.styles';
 import { serviceCardStyles } from '@/styles/ServiceCard.styles';
 import { emergencyStyles } from '@/styles/Emergency.styles';
-import AudioCallInterface from '@/components/AudioCallInterface';
-import ChatBox from '@/components/chat/ChatBox';
 import SlideMenu from '@/components/navigation/SlideMenu';
 import { EmergencyPasskeyModal } from '@/components/modals/EmergencyPasskeyModal';
 import { simpleCallService, SimpleCallSession } from '@/services/simpleCall.service';
@@ -37,8 +35,6 @@ import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/nativ
 import { useEmergency } from '@/features/emergency';
 import { verifyEmergencyPasskeyDetailed } from '@/features/emergency/emergency.passkey';
 import { EMERGENCY_PASSKEY_TIMEOUT_SECONDS } from '@/features/emergency/emergency.constants';
-import { useChat } from '@/hooks/useChat';
-import { formatChatTime } from '@/utils/chat';
 import { useIOSCompatibleSiren } from '@/hooks/useIOSCompatibleSiren';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
@@ -76,12 +72,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const [showCall, setShowCall] = useState(false);
   const [callSession, setCallSession] = useState<SimpleCallSession | null>(null);
   const [isAudioCall, setIsAudioCall] = useState(false);
-  
-  // Chat state
-  const [showChatbox, setShowChatbox] = useState(false);
-  const [chatInput, setChatInput] = useState('');
-  const [isSendingChat, setIsSendingChat] = useState(false);
-  const chat = useChat();
   
   // Emergency state
   const { triggerEmergency } = useEmergency();
@@ -249,35 +239,11 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
       const userName = user?.name || user.email || 'User';
       
       if (callType === 'audio') {
-        // Use dedicated audio call service for audio calls
-        const { audioCallService } = await import('@/services/audioCall.service');
+        // Navigate to dedicated audio call screen.
+        // AudioCallScreen will generate callId + initiate the call internally.
+        (navigation as any).navigate('AudioCall');
         
-        // Initialize user
-        await audioCallService.initializeUser(user.id, userName);
-        
-        // Generate call ID (similar to video calls)
-        const timestamp = Date.now();
-        const shortUserId = user.id.substring(0, 8);
-        const callId = `audio-${shortUserId}-${timestamp}`;
-        
-        // Create audio call (this will create the database record and Stream call)
-        await audioCallService.createAudioCall(callId, true);
-        
-        // Create session object for UI
-        const session: SimpleCallSession = {
-          id: callId,
-          callType: 'audio',
-          roomCode: callId,
-          userName: userName,
-          status: 'active',
-          createdAt: new Date().toISOString(),
-        };
-        
-        setCallSession(session);
-        setIsAudioCall(true);
-        setShowCall(true);
-        
-        console.log('[HomeScreen] Audio call started:', callId);
+        console.log('[HomeScreen] Audio call screen opened');
       } else {
         // Use simpleCallService for video calls
         const session = await simpleCallService.createCallSession({
@@ -311,7 +277,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
       setIsStartingCall(false);
       setCallPriorityActive(false); // Reset priority flag on error too
     }
-  }, []);
+  }, [auth.user, navigation]);
   
   // Initiate emergency response (trigger emergency and start video call)
   const initiateEmergencyResponse = useCallback(async (options?: { alertDescription?: string; callReason?: string }) => {
@@ -741,16 +707,11 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         {
           text: 'Start Audio Call',
           onPress: async () => {
-            const hasAccess = await checkSubscriptionAccess('Audio Call');
-            if (!hasAccess) return;
             try {
-              setIsStartingCall(true);
               await startCall('audio', 'Direct audio call from homepage');
             } catch (error) {
               console.error('[HomeScreen] Failed to start audio call:', error);
               Alert.alert('Call Error', 'Failed to start audio call. Please try again.');
-            } finally {
-              setIsStartingCall(false);
             }
           }
         }
@@ -807,36 +768,8 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
    * This function is passed to child components, so stable reference improves performance
    */
   const handleOpenChat = useCallback(() => {
-    // Open immediately; verify access in background and close if denied.
-    setShowChatbox(true);
-    void checkSubscriptionAccess('Chat')
-      .then((has) => {
-        if (!has) setShowChatbox(false);
-      })
-      .catch(() => {});
-  }, []); // No dependencies - function is stable
-
-  /**
-   * Send chat message. Accepts text directly to avoid stale-closure issues
-   * (e.g. quick responses setting state then immediately calling send).
-   */
-  const handleSendMessage = useCallback(async (text?: string) => {
-    const content = (text || chatInput).trim();
-    if (!content || isSendingChat) {
-      return;
-    }
-    setIsSendingChat(true);
-    setChatInput('');
-    try {
-      await chat.sendMessage(content);
-    } catch (error) {
-      console.error('[HomeScreen] Error sending message:', error);
-      Alert.alert('Error', 'Failed to send message. Please try again.');
-      setChatInput(content); // Restore input on error
-    } finally {
-      setIsSendingChat(false);
-    }
-  }, [chatInput, chat.sendMessage, isSendingChat]);
+    (navigation as any).navigate('Chat');
+  }, [navigation]);
 
   return (
     <View style={{ flex: 1, backgroundColor: isSirenActive ? siren.bgColor : undefined }}>
@@ -1036,26 +969,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           </View>
         </ScrollView>
         
-        {/* Audio Call Interface - Full Screen */}
-        {showCall && callSession && isAudioCall && (
-          <View style={{
-            position: 'absolute',
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            zIndex: 9999,
-            backgroundColor: '#1a1a1a'
-          }}>
-            <AudioCallInterface
-              callId={callSession.roomCode}
-              userName={callSession.userName}
-              onCallEnd={handleCallEnd}
-              onCallError={handleCallError}
-            />
-          </View>
-        )}
-        
         {/* Stream Video Call Interface - Full Screen */}
         {/* {showCall && callSession && !isAudioCall && (
           <View style={{
@@ -1109,19 +1022,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           shakeAnimation={shakeAnimation}
         />
         
-        {/* Chat Box */}
-        <ChatBox
-          visible={showChatbox}
-          chatMessages={chat.messages}
-          chatInput={chatInput}
-          isTyping={chat.isTyping}
-          isSending={isSendingChat}
-          onClose={() => setShowChatbox(false)}
-          onChatInputChange={setChatInput}
-          onSendMessage={handleSendMessage}
-          formatChatTime={formatChatTime}
-        />
-
         {/* Emergency Status Message - Auto-dismissing overlay */}
         {emergencyStatusMessage && (
           <Animated.View

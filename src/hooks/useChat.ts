@@ -1,23 +1,33 @@
-/**
- * Chat Hook
- * 
- * Hook for managing chat messages and real-time updates.
- * Based on old app's useChat hook but adapted for new app architecture.
- */
-
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { streamChat } from '@/services/streamChat.service';
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { apiBaseUrl } from '@/config/environment';
-import { dedupe, getSessionUser, withTimeout } from '@/core/net/supabaseQuery';
-import { QueryCache } from '@/core/net/queryCache';
+import { AxiosError } from 'axios';
+import {
+  ChatMessage as ApiChatMessage,
+  ChatThread,
+  createOrGetActiveThread,
+  getThreadDetails,
+  getThreadMessages,
+  resolveThread,
+  sendThreadMessage,
+} from '@/api/chat';
+import { clearApiSession, getApiSession } from '@/session/session';
 import { useAuth } from '@/core/auth';
+import {
+  chatSocketService,
+  NotificationEnvelope,
+  SocketConnectionState,
+} from '@/realtime/core';
+import {
+  ChatRealtimeEvent,
+  parseChatRealtimeEvent,
+} from '@/realtime/chat';
 
 export interface ChatMessage {
   id: string;
   text: string;
-  sender: 'user' | 'agent';
+  sender: 'user' | 'agent' | 'system';
   timestamp: Date;
+  messageType: 'TEXT' | 'SYSTEM' | 'MEDIA';
+  systemEvent?: ApiChatMessage['systemEvent'];
 }
 
 export interface UseChatReturn {
@@ -26,284 +36,464 @@ export interface UseChatReturn {
   loading: boolean;
   error: string | null;
   isTyping: boolean;
+  activeThreadId: string | null;
+  threadStatus: ChatThread['status'] | null;
+  hasAssignedAgent: boolean;
   sendMessage: (content: string) => Promise<void>;
   refreshMessages: () => Promise<void>;
+  resolveActiveThread: () => Promise<void>;
 }
 
-export function useChat(): UseChatReturn {
+export interface UseChatOptions {
+  initialThreadId?: string;
+}
+
+const isAxiosErrorWithStatus = (
+  error: unknown,
+): error is AxiosError & { response: { status: number } } => {
+  return !!(
+    error &&
+    typeof error === 'object' &&
+    'response' in error &&
+    (error as AxiosError).response &&
+    typeof (error as AxiosError).response?.status === 'number'
+  );
+};
+
+const mapMessageToUi = (
+  message: ApiChatMessage,
+  currentUserId: string | undefined,
+): ChatMessage => {
+  const isSystemMessage = message.messageType === 'SYSTEM' || !!message.systemEvent;
+  const senderRole = message.sender?.role;
+  let sender: 'user' | 'agent' | 'system' = 'agent';
+
+  if (isSystemMessage) {
+    sender = 'system';
+  } else if (senderRole === 'USER' || (currentUserId && message.senderId === currentUserId)) {
+    sender = 'user';
+  }
+
+  return {
+    id: message.id,
+    text: message.content?.trim() || '',
+    sender,
+    timestamp: new Date(message.createdAt),
+    messageType: message.messageType,
+    systemEvent: message.systemEvent ?? null,
+  };
+};
+
+export function useChat(options?: UseChatOptions): UseChatReturn {
+  const initialThreadId = options?.initialThreadId;
+  const { isAuthReady, user, signOut } = useAuth();
+  const socketBaseUrl = (
+    process.env.EXPO_PUBLIC_WEBSOCKET_URL ||
+    process.env.EXPO_PUBLIC_BACKEND_URL ||
+    ''
+  ).replace(/\/$/, '');
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [isTyping, setIsTyping] = useState(false);
-  const isConnectedRef = useRef(false);
-  const { isAuthReady } = useAuth(); // ✅ NEW: Auth readiness signal
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [threadStatus, setThreadStatus] = useState<ChatThread['status'] | null>(null);
+  const [hasAssignedAgent, setHasAssignedAgent] = useState(false);
+  const hasConnectedOnceRef = useRef(false);
+  const activeThreadIdRef = useRef<string | null>(null);
+  const messagesRef = useRef<ChatMessage[]>([]);
 
-  const lastLoadedUserIdRef = useRef<string | null>(null);
+  useEffect(() => {
+    activeThreadIdRef.current = activeThreadId;
+  }, [activeThreadId]);
 
-  // Fetch messages from database
-  const fetchMessages = useCallback(async () => {
-    return dedupe('chat.fetchMessages', async () => {
-      try {
-        const user = await getSessionUser();
-        if (!user) return;
+  useEffect(() => {
+    messagesRef.current = messages;
+  }, [messages]);
 
-        const cacheKey = `deephorizon.cache.chat.messages.v1.${user.id}`;
-        let usedCache = false;
+  const handleError = useCallback(async (err: unknown, fallbackMessage: string) => {
+    if (isAxiosErrorWithStatus(err) && err.response.status === 401) {
+      setError('Session expired. Please login again.');
+      await clearApiSession().catch(() => {});
+      await signOut().catch(() => {});
+      return;
+    }
 
-        // Instant render from cache (stale-while-revalidate)
-        if (lastLoadedUserIdRef.current !== user.id) {
-          lastLoadedUserIdRef.current = user.id;
-        }
-        const cached = await QueryCache.get<any[]>(cacheKey, 5 * 60_000);
-        if (Array.isArray(cached) && cached.length > 0) {
-          usedCache = true;
-          const formattedCached: ChatMessage[] = cached.map((row) => ({
-            id: row.id,
-            text: row.body || '',
-            sender: row.sender === 'agent' ? 'agent' : 'user',
-            timestamp: new Date(row.created_at),
-          }));
-          setMessages(formattedCached);
-          const unreadIds = cached.filter((m) => m.sender === 'agent' && !m.read_at).map((m) => m.id);
-          setUnreadCount(unreadIds.length);
-        }
+    if (isAxiosErrorWithStatus(err) && err.response.status === 403) {
+      setError('You are not allowed to access this chat thread.');
+      return;
+    }
 
-        if (!usedCache) {
-          setLoading(true);
-        }
+    setError(fallbackMessage);
+  }, [signOut]);
 
-        let rows: any[] = [];
-        let fetchError: any = null;
+  const loadMessages = useCallback(async (threadId: string) => {
+    const response = await getThreadMessages(threadId, 1, 50);
+    const mapped = response.data
+      .map((message) => mapMessageToUi(message, user?.id))
+      .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
-        // Proxy-first: try dashboard API
-        let accessToken: string | null = null;
-        try {
-          const session = await ensureValidSession();
-          accessToken = (session as any)?.access_token || null;
-        } catch {
-          // Continue without proxy
-        }
+    setMessages(mapped);
 
-        if (accessToken) {
-          try {
-            const controller = new AbortController();
-            const timeoutId = setTimeout(() => controller.abort(), 10_000);
-            try {
-              const res = await fetch(`${apiBaseUrl}/api/mobile/chat?action=getMessages`, {
-                headers: {
-                  'Authorization': `Bearer ${accessToken}`,
-                  'Content-Type': 'application/json',
-                },
-                signal: controller.signal,
-              });
-              if (res.ok) {
-                const json = await res.json();
-                const data = json?.data || json;
-                rows = (data?.messages ?? []) as any[];
-                console.log('[useChat] Messages fetched via proxy');
-              } else {
-                console.warn('[useChat] Proxy fetch failed, falling back');
-                fetchError = 'proxy_failed';
-              }
-            } finally {
-              clearTimeout(timeoutId);
-            }
-          } catch (proxyErr: any) {
-            console.warn('[useChat] Proxy error, falling back:', proxyErr?.message);
-            fetchError = 'proxy_failed';
-          }
-        } else {
-          fetchError = 'no_token';
-        }
+    const unread = mapped.filter((message) => message.sender === 'agent').length;
+    setUnreadCount(unread);
+  }, [user?.id]);
 
-        // Fallback: direct Supabase
-        if (fetchError) {
-          const query = supabase
-            .from('messages')
-            .select('id, body, sender, created_at, read_at')
-            .eq('user_id', user.id)
-            .order('created_at', { ascending: true })
-            .limit(50);
-
-          const { data, error } = await withTimeout(query, 10_000, 'messages.fetch');
-          if (error) throw error;
-          rows = (data ?? []) as any[];
-        }
-
-        // Cache rows for instant next render
-        void QueryCache.set(cacheKey, rows).catch(() => {});
-
-        const formattedMessages: ChatMessage[] = rows.map((row: any) => ({
-          id: row.id,
-          text: row.body || '',
-          sender: row.sender === 'agent' ? 'agent' : 'user',
-          timestamp: new Date(row.created_at),
-        }));
-        setMessages(formattedMessages);
-
-        // Calculate unread count (agent messages without read_at)
-        const unreadIds = rows.filter((m: any) => m.sender === 'agent' && !m.read_at).map((m: any) => m.id);
-        setUnreadCount(unreadIds.length);
-
-        // Mark agent messages as read (best-effort, proxy-first)
-        if (unreadIds.length > 0) {
-          if (accessToken) {
-            // Try via proxy (best-effort)
-            void fetch(`${apiBaseUrl}/api/mobile/chat`, {
-              method: 'PATCH',
-              headers: {
-                'Authorization': `Bearer ${accessToken}`,
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ action: 'markReadByIds', messageIds: unreadIds }),
-            }).catch(() => {
-              // Fallback to direct Supabase
-              void withTimeout(
-                supabase.from('messages').update({ read_at: new Date().toISOString() }).in('id', unreadIds).eq('user_id', user.id),
-                8_000,
-                'messages.markRead'
-              ).catch(() => {});
-            });
-          } else {
-            void withTimeout(
-              supabase.from('messages').update({ read_at: new Date().toISOString() }).in('id', unreadIds).eq('user_id', user.id),
-              8_000,
-              'messages.markRead'
-            ).catch(() => {});
-          }
-        }
-      } catch (err: any) {
-        console.error('[useChat] Error fetching messages:', err);
-        setError(err?.message || 'Failed to fetch messages');
-      } finally {
-        setLoading(false);
+  const appendMessageIfMissing = useCallback((message: ChatMessage) => {
+    setMessages((prev) => {
+      if (prev.some((item) => item.id === message.id)) {
+        return prev;
       }
+
+      return [...prev, message].sort(
+        (a, b) => a.timestamp.getTime() - b.timestamp.getTime(),
+      );
     });
   }, []);
 
-  // Connect to chat service and subscribe to messages
-  useEffect(() => {
-    let mounted = true;
-    // Track the handler so we can properly unsubscribe on cleanup
-    let clientRef: any = null;
-    let handlerRef: ((event: any) => void) | null = null;
+  const replaceOptimisticMessage = useCallback((tempId: string, confirmed: ChatMessage) => {
+    setMessages((prev) => {
+      const hasConfirmed = prev.some((item) => item.id === confirmed.id);
 
-    const connectAndSubscribe = async () => {
-      if (!isAuthReady) {
-        console.log('[useChat] Waiting for auth to be ready...');
-        return;
+      const withoutTemp = prev.filter((item) => item.id !== tempId);
+      if (hasConfirmed) {
+        return withoutTemp;
       }
 
-      // Prevent double-connection
-      if (isConnectedRef.current) {
-        console.log('[useChat] Already connected - skipping');
-        return;
+      return prev.map((item) => (item.id === tempId ? confirmed : item));
+    });
+  }, []);
+
+  const refreshThreadState = useCallback(async (threadId: string) => {
+    const thread = await getThreadDetails(threadId);
+    setThreadStatus(thread?.status ?? null);
+    setHasAssignedAgent(!!thread?.currentAgentId);
+  }, []);
+
+  const waitForAgentAssignment = useCallback(async (
+    threadId: string,
+    timeoutMs = 30000,
+    intervalMs = 1500,
+  ): Promise<boolean> => {
+    const startedAt = Date.now();
+
+    while (Date.now() - startedAt < timeoutMs) {
+      const thread = await getThreadDetails(threadId);
+      const assigned = !!thread?.currentAgentId;
+
+      setThreadStatus(thread?.status ?? null);
+      setHasAssignedAgent(assigned);
+
+      if (assigned) {
+        return true;
       }
 
-      try {
-        const user = await getSessionUser();
-        if (!user || !mounted) {
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+    }
+
+    return false;
+  }, []);
+
+  const ensureThread = useCallback(async (): Promise<string> => {
+    if (activeThreadId) {
+      if (threadStatus === 'OPEN') {
+        return activeThreadId;
+      }
+
+      // Guard against stale local status: verify current thread on backend before creating a new one.
+      const existingThread = await getThreadDetails(activeThreadId).catch(() => null);
+      if (existingThread?.status === 'OPEN') {
+        setThreadStatus(existingThread.status);
+        setHasAssignedAgent(!!existingThread.currentAgentId);
+        return activeThreadId;
+      }
+    }
+
+    const thread = await createOrGetActiveThread();
+    const didSwitchThread = thread.id !== activeThreadIdRef.current;
+
+    setActiveThreadId(thread.id);
+    setThreadStatus(thread.status);
+    setHasAssignedAgent(!!thread.currentAgentId);
+
+    if (didSwitchThread) {
+      setMessages([]);
+      setUnreadCount(0);
+    }
+
+    return thread.id;
+  }, [activeThreadId, threadStatus]);
+
+  const initializeChat = useCallback(async () => {
+    if (!isAuthReady) {
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+
+    try {
+      if (initialThreadId) {
+        const requestedThread = await getThreadDetails(initialThreadId);
+        if (requestedThread) {
+          setActiveThreadId(requestedThread.id);
+          setThreadStatus(requestedThread.status);
+          setHasAssignedAgent(!!requestedThread.currentAgentId);
+
+          await Promise.all([
+            loadMessages(requestedThread.id),
+            refreshThreadState(requestedThread.id),
+          ]);
+
           return;
         }
+      }
 
-        const userName = user.user_metadata?.full_name || user.email || 'Mobile User';
+      const thread = await createOrGetActiveThread();
+      setActiveThreadId(thread.id);
+      setThreadStatus(thread.status);
+      setHasAssignedAgent(!!thread.currentAgentId);
 
-        // Connect to chat service
-        await streamChat.connect(user.id, userName);
-        if (!mounted) return;
-        isConnectedRef.current = true;
+      await Promise.all([
+        loadMessages(thread.id),
+        refreshThreadState(thread.id),
+      ]);
+    } catch (err) {
+      await handleError(err, 'Unable to load chat. Please try again.');
+    } finally {
+      setLoading(false);
+    }
+  }, [handleError, initialThreadId, isAuthReady, loadMessages, refreshThreadState]);
 
-        // Fetch initial messages
-        await fetchMessages();
+  useEffect(() => {
+    initializeChat();
+  }, [initializeChat]);
 
-        // Subscribe to new messages
-        const client = await streamChat.getClient();
-        if (!mounted) return;
-        clientRef = client;
+  const handleSocketNotification = useCallback((envelope: NotificationEnvelope) => {
+    const parsed = parseChatRealtimeEvent(envelope);
+    const currentThreadId = activeThreadIdRef.current;
 
-        const messageHandler = (event: any) => {
-          if (!mounted) return;
+    if (!parsed || !currentThreadId) {
+      return;
+    }
 
-          const newMessage: ChatMessage = {
-            id: event.message.id,
-            text: event.message.text,
-            sender: event.sender === 'agent' ? 'agent' : 'user',
-            timestamp: new Date(event.message.created_at),
-          };
+    if (parsed.data.threadId !== currentThreadId) {
+      if (parsed.event === ChatRealtimeEvent.MESSAGE_CREATED) {
+        setUnreadCount((prev) => prev + 1);
+      }
+      return;
+    }
 
-          setMessages((prev) => {
-            // Avoid duplicates
-            if (prev.some((msg) => msg.id === newMessage.id)) {
-              return prev;
-            }
-            return [...prev, newMessage];
-          });
+    if (parsed.event === ChatRealtimeEvent.MESSAGE_CREATED) {
+      const isSystemMessage =
+        parsed.data.messageType === 'SYSTEM' ||
+        !!parsed.data.systemEvent;
 
-          // Update unread count if agent message
-          if (event.sender === 'agent') {
-            setUnreadCount((prev) => prev + 1);
-          }
-        };
+      const sender: ChatMessage['sender'] = isSystemMessage
+        ? 'system'
+        : parsed.data.senderRole === 'USER' ||
+          parsed.data.senderId === user?.id
+          ? 'user'
+          : 'agent';
 
-        handlerRef = messageHandler;
-        client.on('message.new', messageHandler);
-      } catch (err: any) {
-        console.error('[useChat] Error connecting to chat:', err);
-        if (mounted) setError(err.message || 'Failed to connect to chat');
+      appendMessageIfMissing({
+        id: parsed.data.messageId,
+        text: parsed.data.content?.trim() || '',
+        sender,
+        timestamp: new Date(parsed.data.createdAt),
+        messageType: parsed.data.messageType,
+        systemEvent: parsed.data.systemEvent ?? null,
+      });
+      return;
+    }
+
+    if (parsed.event === ChatRealtimeEvent.THREAD_ASSIGNED) {
+      setHasAssignedAgent(true);
+      appendMessageIfMissing({
+        id: `system-assigned-${String(parsed.data.assignedAt)}`,
+        text: 'Agent joined your chat',
+        sender: 'system',
+        timestamp: new Date(parsed.data.assignedAt),
+        messageType: 'SYSTEM',
+        systemEvent: 'AGENT_ASSIGNED',
+      });
+
+      void refreshThreadState(currentThreadId).catch(() => {
+        void loadMessages(currentThreadId).catch(() => {});
+      });
+      return;
+    }
+
+    if (parsed.event === ChatRealtimeEvent.THREAD_RESOLVED) {
+      setThreadStatus('RESOLVED');
+      appendMessageIfMissing({
+        id: `system-resolved-${String(parsed.data.resolvedAt)}`,
+        text: 'Chat resolved',
+        sender: 'system',
+        timestamp: new Date(parsed.data.resolvedAt),
+        messageType: 'SYSTEM',
+        systemEvent: 'CHAT_RESOLVED',
+      });
+
+      void refreshThreadState(currentThreadId).catch(() => {
+        void loadMessages(currentThreadId).catch(() => {});
+      });
+    }
+  }, [appendMessageIfMissing, loadMessages, refreshThreadState, user?.id]);
+
+  useEffect(() => {
+    if (!isAuthReady) {
+      return;
+    }
+
+    if (!socketBaseUrl) {
+      console.warn('[useChat] Missing socket base URL. Set EXPO_PUBLIC_WEBSOCKET_URL or EXPO_PUBLIC_BACKEND_URL');
+      return;
+    }
+
+    const syncLatestToken = async () => {
+      const latestToken = (await getApiSession()).token;
+      if (latestToken) {
+        chatSocketService.connect(socketBaseUrl, latestToken);
       }
     };
 
-    connectAndSubscribe();
+    void syncLatestToken();
+    const tokenSyncInterval = setInterval(() => {
+      void syncLatestToken();
+    }, 15000);
+
+    chatSocketService.onNotification(handleSocketNotification);
+
+    const connectionStateHandler = (state: SocketConnectionState) => {
+      const currentThreadId = activeThreadIdRef.current;
+      if (state !== SocketConnectionState.CONNECTED || !currentThreadId) {
+        return;
+      }
+
+      if (hasConnectedOnceRef.current) {
+        void Promise.all([
+          loadMessages(currentThreadId),
+          refreshThreadState(currentThreadId),
+        ]).catch(() => {});
+      }
+
+      hasConnectedOnceRef.current = true;
+    };
+
+    chatSocketService.onConnectionStateChange(connectionStateHandler);
 
     return () => {
-      mounted = false;
-      // Properly unsubscribe the event handler (was previously orphaned)
-      if (clientRef && handlerRef) {
-        try {
-          clientRef.off('message.new', handlerRef);
-        } catch {
-          // Non-critical — client may already be disconnected
+      clearInterval(tokenSyncInterval);
+      chatSocketService.offNotification(handleSocketNotification);
+      chatSocketService.offConnectionStateChange(connectionStateHandler);
+    };
+  }, [handleSocketNotification, isAuthReady, loadMessages, refreshThreadState, socketBaseUrl]);
+
+  const sendMessage = useCallback(async (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    let tempMessageId = '';
+    const currentThreadId = activeThreadIdRef.current;
+    const wasResolvedOrClosed = threadStatus === 'RESOLVED' || threadStatus === 'CLOSED';
+    const canSendImmediately = !!currentThreadId && threadStatus === 'OPEN' && !wasResolvedOrClosed;
+
+    try {
+      setError(null);
+      const threadId = canSendImmediately
+        ? currentThreadId
+        : await ensureThread();
+
+      if (wasResolvedOrClosed) {
+        const waitingMessageId = `system-waiting-agent-${threadId}-${Date.now()}`;
+        appendMessageIfMissing({
+          id: waitingMessageId,
+          text: 'Starting a new chat. Waiting for an agent to connect...',
+          sender: 'system',
+          timestamp: new Date(),
+          messageType: 'SYSTEM',
+          systemEvent: null,
+        });
+
+        const isAssigned = await waitForAgentAssignment(threadId);
+        if (!isAssigned) {
+          throw new Error('No agent connected yet. Please try again in a moment.');
         }
       }
-      // Disconnect the stream client to prevent memory leaks
-      if (isConnectedRef.current) {
-        streamChat.disconnect().catch(() => {});
-      }
-      isConnectedRef.current = false;
-    };
-  }, [isAuthReady, fetchMessages]);
 
-  // Send message
-  const sendMessage = useCallback(async (content: string) => {
-    if (!content.trim()) {
+      const latestTimestamp = messagesRef.current[messagesRef.current.length - 1]?.timestamp?.getTime() ?? 0;
+      const optimisticTimestamp = new Date(Math.max(Date.now(), latestTimestamp + 1));
+
+      tempMessageId = `temp-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+      appendMessageIfMissing({
+        id: tempMessageId,
+        text: trimmed,
+        sender: 'user',
+        timestamp: optimisticTimestamp,
+        messageType: 'TEXT',
+        systemEvent: null,
+      });
+
+      const sentMessage = await sendThreadMessage(threadId, {
+        content: trimmed,
+        messageType: 'TEXT',
+      });
+
+      replaceOptimisticMessage(tempMessageId, mapMessageToUi(sentMessage, user?.id));
+      void refreshThreadState(threadId).catch(() => {});
+    } catch (err) {
+      if (tempMessageId) {
+        setMessages((prev) => prev.filter((item) => item.id !== tempMessageId));
+      }
+      await handleError(err, err instanceof Error ? err.message : 'Unable to send message, try again');
+      throw err;
+    }
+  }, [appendMessageIfMissing, ensureThread, handleError, refreshThreadState, replaceOptimisticMessage, threadStatus, user?.id, waitForAgentAssignment]);
+
+  const refreshMessages = useCallback(async () => {
+    try {
+      setError(null);
+      const threadId = await ensureThread();
+      await Promise.all([
+        loadMessages(threadId),
+        refreshThreadState(threadId),
+      ]);
+    } catch (err) {
+      await handleError(err, 'Unable to refresh chat. Please try again.');
+    }
+  }, [ensureThread, handleError, loadMessages, refreshThreadState]);
+
+  const resolveActiveThread = useCallback(async () => {
+    if (!activeThreadId) {
       return;
     }
 
     try {
       setError(null);
-      await streamChat.sendText(content);
-      // Message will be added via real-time subscription
-    } catch (err: any) {
-      console.error('[useChat] Error sending message:', err);
-      setError(err.message || 'Failed to send message');
+      const resolvedThread = await resolveThread(activeThreadId);
+      setThreadStatus(resolvedThread.status);
+      await loadMessages(activeThreadId);
+    } catch (err) {
+      await handleError(err, 'Unable to resolve chat. Please try again.');
       throw err;
     }
-  }, []);
-
-  // Refresh messages
-  const refreshMessages = useCallback(async () => {
-    await fetchMessages();
-  }, [fetchMessages]);
+  }, [activeThreadId, handleError, loadMessages]);
 
   return {
     messages,
     unreadCount,
     loading,
     error,
-    isTyping,
+    isTyping: false,
+    activeThreadId,
+    threadStatus,
+    hasAssignedAgent,
     sendMessage,
     refreshMessages,
+    resolveActiveThread,
   };
 }
 

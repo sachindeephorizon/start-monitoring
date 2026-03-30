@@ -18,8 +18,17 @@ import { styles } from './ChatBox.styles';
 interface ChatMessage {
   id: string;
   text: string;
-  sender: 'user' | 'agent';
+  sender: 'user' | 'agent' | 'system';
   timestamp: Date;
+  messageType?: 'TEXT' | 'SYSTEM' | 'MEDIA';
+  systemEvent?:
+    | 'AGENT_JOINED'
+    | 'AGENT_LEFT'
+    | 'AGENT_ASSIGNED'
+    | 'AGENT_UNASSIGNED'
+    | 'CHAT_RESOLVED'
+    | 'CHAT_REOPENED'
+    | null;
 }
 
 interface ChatBoxProps {
@@ -28,9 +37,13 @@ interface ChatBoxProps {
   chatInput: string;
   isTyping: boolean;
   isSending?: boolean;
+  threadStatus?: 'OPEN' | 'RESOLVED' | 'CLOSED' | null;
+  hasAssignedAgent?: boolean;
+  isResolving?: boolean;
   onClose: () => void;
   onChatInputChange: (text: string) => void;
   onSendMessage: (text?: string) => void;
+  onResolveChat?: () => void;
   formatChatTime: (date: Date) => string;
 }
 
@@ -40,14 +53,39 @@ const ChatBox: React.FC<ChatBoxProps> = ({
   chatInput,
   isTyping,
   isSending,
+  threadStatus,
+  hasAssignedAgent,
+  isResolving,
   onClose,
   onChatInputChange,
   onSendMessage,
+  onResolveChat,
   formatChatTime,
 }) => {
   const quickResponses = ['I need help', 'Emergency assistance', 'Check my location', 'I\'m safe'];
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
+  const canResolve = threadStatus === 'OPEN' && !!onResolveChat;
+  const statusText = threadStatus || 'OPEN';
+  const headerTitle = hasAssignedAgent ? 'Security Agent' : 'Support Team';
+  const headerPresence = hasAssignedAgent ? 'Assigned' : 'Waiting for agent';
+
+  const getSystemEventText = (event?: ChatMessage['systemEvent']): string => {
+    if (!event) {
+      return 'Chat updated';
+    }
+
+    const map: Record<Exclude<ChatMessage['systemEvent'], null | undefined>, string> = {
+      AGENT_JOINED: 'Agent joined the chat',
+      AGENT_LEFT: 'Agent left the chat',
+      AGENT_ASSIGNED: 'Agent assigned',
+      AGENT_UNASSIGNED: 'Agent unassigned',
+      CHAT_RESOLVED: 'Chat resolved',
+      CHAT_REOPENED: 'Chat reopened',
+    };
+
+    return map[event] || 'Chat updated';
+  };
 
   const handleQuickResponse = (response: string) => {
     if (isSending) return;
@@ -58,9 +96,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({
   // Scroll to bottom when new messages arrive or typing indicator appears
   useEffect(() => {
     if (visible && (chatMessages.length > 0 || isTyping)) {
-      // Avoid setTimeout on iOS (can be throttled). Use rAF to align with layout.
+      // Snap to bottom immediately to avoid visible jump from top to bottom.
       requestAnimationFrame(() => {
-        scrollViewRef.current?.scrollToEnd({ animated: true });
+        scrollViewRef.current?.scrollToEnd({ animated: false });
       });
     }
   }, [chatMessages.length, isTyping, visible]);
@@ -117,13 +155,31 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                 <Text style={styles.chatAgentInitials}>SA</Text>
               </View>
               <View style={styles.chatAgentDetails}>
-                <Text style={styles.chatAgentName}>Security Agent</Text>
+                <Text style={styles.chatAgentName}>{headerTitle}</Text>
                 <View style={styles.chatOnlineStatus}>
                   <View style={styles.chatOnlineDot} />
-                  <Text style={styles.chatOnlineText}>Online</Text>
+                  <Text style={styles.chatOnlineText}>{headerPresence}</Text>
+                </View>
+                <View style={styles.chatThreadStatusBadge}>
+                  <Text style={styles.chatThreadStatusText}>Status: {statusText}</Text>
                 </View>
               </View>
             </View>
+
+            {canResolve && (
+              <TouchableOpacity
+                style={styles.chatResolveButton}
+                onPress={onResolveChat}
+                disabled={isResolving}
+                accessible={true}
+                accessibilityLabel="End chat"
+                accessibilityRole="button"
+              >
+                <Text style={styles.chatResolveButtonText}>
+                  {isResolving ? 'Ending...' : 'End chat'}
+                </Text>
+              </TouchableOpacity>
+            )}
 
             <TouchableOpacity
               style={styles.chatCallButton}
@@ -144,29 +200,59 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             showsVerticalScrollIndicator={false}
             keyboardShouldPersistTaps="handled"
             keyboardDismissMode="interactive"
+            onContentSizeChange={() => {
+              if (!visible) {
+                return;
+              }
+
+              requestAnimationFrame(() => {
+                scrollViewRef.current?.scrollToEnd({ animated: false });
+              });
+            }}
           >
-            {chatMessages.map((message, idx) => (
-              <View 
-                key={`${message.id}-${idx}`} 
-                style={[
-                  styles.chatMessageBubble,
-                  message.sender === 'user' ? styles.chatUserMessage : styles.chatAgentMessage
-                ]}
-              >
-                <Text style={[
-                  styles.chatMessageText,
-                  message.sender === 'user' ? styles.chatUserMessageText : styles.chatAgentMessageText
-                ]}>
-                  {message.text}
-                </Text>
-                <Text style={[
-                  styles.chatMessageTime,
-                  message.sender === 'user' ? styles.chatUserMessageTime : styles.chatAgentMessageTime
-                ]}>
-                  {formatChatTime(message.timestamp)}
-                </Text>
-              </View>
-            ))}
+              {chatMessages.map((message) => {
+              const isSystem = message.sender === 'system' || message.messageType === 'SYSTEM';
+
+              if (isSystem) {
+                const systemText = message.text || getSystemEventText(message.systemEvent);
+                return (
+                  <View
+                      key={message.id}
+                    style={[styles.chatMessageBubble, styles.chatSystemMessageWrap]}
+                  >
+                    <View style={styles.chatSystemMessageBubble}>
+                      <Text style={styles.chatSystemMessageText}>{systemText}</Text>
+                    </View>
+                    <Text style={styles.chatSystemMessageTime}>
+                      {formatChatTime(message.timestamp)}
+                    </Text>
+                  </View>
+                );
+              }
+
+              return (
+                <View
+                  key={message.id}
+                  style={[
+                    styles.chatMessageBubble,
+                    message.sender === 'user' ? styles.chatUserMessage : styles.chatAgentMessage
+                  ]}
+                >
+                  <Text style={[
+                    styles.chatMessageText,
+                    message.sender === 'user' ? styles.chatUserMessageText : styles.chatAgentMessageText
+                  ]}>
+                    {message.text}
+                  </Text>
+                  <Text style={[
+                    styles.chatMessageTime,
+                    message.sender === 'user' ? styles.chatUserMessageTime : styles.chatAgentMessageTime
+                  ]}>
+                    {formatChatTime(message.timestamp)}
+                  </Text>
+                </View>
+              );
+            })}
             
             {isTyping && (
               <View style={[styles.chatMessageBubble, styles.chatAgentMessage]}>
@@ -194,6 +280,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                   key={response}
                   style={styles.chatQuickResponseButton}
                   onPress={() => handleQuickResponse(response)}
+                  disabled={!!isSending}
                 >
                   <Text style={styles.chatQuickResponseText}>{response}</Text>
                 </TouchableOpacity>
@@ -206,13 +293,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             <View style={styles.chatInputWrapper}>
               <TextInput
                 style={styles.chatInput}
-                placeholder="Type a message..."
+                placeholder={threadStatus === 'RESOLVED' || threadStatus === 'CLOSED' ? 'Type to start a new chat...' : 'Type a message...'}
                 placeholderTextColor="#bdc3c7"
                 value={chatInput}
                 onChangeText={onChatInputChange}
                 multiline={true}
                 maxLength={500}
                 textAlignVertical="top"
+                editable={true}
                 accessible={true}
                 accessibilityLabel="Message input"
                 accessibilityHint="Type a message to your security agent"
@@ -230,7 +318,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                 onPress={() => {
                   if (chatInput.trim()) onSendMessage(chatInput.trim());
                 }}
-                disabled={!chatInput.trim() || isSending}
+                disabled={!chatInput.trim() || !!isSending}
                 accessible={true}
                 accessibilityLabel="Send message"
                 accessibilityRole="button"

@@ -125,12 +125,12 @@ export function useNotificationRouting() {
  * This hook should be used in a component that's always mounted.
  */
 export function usePushNotifications() {
-  const { isAuthenticated } = useAuth();
+  const {isAuthReady} = useAuth();
   const registrationAttemptedRef = useRef(false);
 
   useEffect(() => {
     // Only register if user is authenticated
-    if (!isAuthenticated) {
+    if (!isAuthReady) {
       return;
     }
 
@@ -148,11 +148,11 @@ export function usePushNotifications() {
         registrationAttemptedRef.current = false;
       });
     }
-  }, [isAuthenticated]);
+  }, [isAuthReady]);
 
   // Re-register when app comes to foreground (token might have changed)
   useEffect(() => {
-    if (!isAuthenticated) {
+    if (!isAuthReady) {
       return;
     }
 
@@ -166,6 +166,6 @@ export function usePushNotifications() {
     return () => {
       subscription.remove();
     };
-  }, [isAuthenticated]);
+  }, [isAuthReady]);
 }
 

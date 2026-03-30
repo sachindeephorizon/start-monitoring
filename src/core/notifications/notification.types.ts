@@ -49,6 +49,11 @@ export interface PushPayload {
   chat_id?: string;
 
   /**
+   * Chat thread ID for directly opening a specific thread
+   */
+  thread_id?: string;
+
+  /**
    * Tracking session ID for tracking alerts
    */
   tracking_session_id?: string;
