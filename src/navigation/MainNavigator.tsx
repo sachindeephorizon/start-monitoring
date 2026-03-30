@@ -49,8 +49,8 @@ export type MainStackParamList = {
   Tracking: undefined;
   ScheduleCheckIn: undefined;
   BookBodyguard: undefined;
-  VideoMonitor: undefined;
-  AudioCall: { callId?: string; userName?: string } | undefined;
+  VideoMonitor: { callId?: string; userName?: string; autoStart?: boolean; agentId?: string } | undefined;
+  AudioCall: { callId?: string; userName?: string; agentId?: string } | undefined;
   // TODO: Add these when screens are implemented
   // VideoCall: { sessionId: string; roomCode: string };
 };

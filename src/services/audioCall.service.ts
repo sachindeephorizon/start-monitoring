@@ -10,6 +10,7 @@ import type { StreamVideoClient, User, Call } from '@stream-io/video-react-nativ
 import {
   callSessionTokenGenerate,
   initiateCallSession,
+  initiateCallSessionWithAgent,
   updateCallSessionStatus,
   endCallSession,
   CallPriority,
@@ -228,7 +229,7 @@ class AudioCallService {
     }
   }
 
-  public async createAudioCall(callId: string, create: boolean = true): Promise<Call> {
+  public async createAudioCall(callId: string, create: boolean = true, agentId?: string): Promise<Call> {
     if (!this.client) {
       throw new Error('Audio call client not initialized');
     }
@@ -253,12 +254,18 @@ class AudioCallService {
       // Create backend call-session record (same API family used by video)
       if (create) {
         try {
-          await initiateCallSession({
+          const payload = {
             callType: CallType.AUDIO,
             serviceType: CallServiceType.AUDIT_CALL,
             priority: CallPriority.HIGH,
             callId,
-          });
+          };
+
+          if (agentId) {
+            await initiateCallSessionWithAgent(payload, agentId);
+          } else {
+            await initiateCallSession(payload);
+          }
         } catch (sessionError) {
           console.error('[AudioCallService] Failed to create audio call session:', sessionError);
           throw sessionError;

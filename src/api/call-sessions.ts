@@ -64,3 +64,15 @@ export const endCallSession = async (callId: string) => {
     })
   return res.data;
 }
+
+
+export const initiateCallSessionWithAgent = async (data: CreateCallSessionDto, agentId: string) => {
+    const res = await post(`/call-sessions/initiate-to-agent`, {
+        callType: data.callType,
+        priority: data.priority,
+        serviceType: data.serviceType,
+        callId: data.callId,
+        agentId
+    })
+  return res.data;
+}

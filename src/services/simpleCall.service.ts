@@ -20,6 +20,7 @@ export interface SimpleCallConfig {
   userName: string;
   reason: string;
   emergencyId?: string;
+  agentId?: string;
   priority?: 'low' | 'medium' | 'high' | 'emergency';
 }
 
@@ -47,7 +48,7 @@ class SimpleCallService {
     // Create session — the callSessionId returned IS the Stream room code.
     // No second round-trip to fetch the room code is necessary.
     const result = await VideoCallService.createCallSession(
-      undefined, // agentId
+      config.agentId,
       config.reason,
       config.priority || 'medium'
     );

@@ -1,4 +1,4 @@
-import React, { useState, Suspense, useEffect, useCallback } from 'react';
+import React, { useState, Suspense, useEffect, useCallback, useRef } from 'react';
 import {
 	View,
 	Text,
@@ -20,11 +20,14 @@ import { simpleCallService, SimpleCallSession } from '@/services/simpleCall.serv
 import { setCallPriorityActive } from '@/services/callPriority';
 import { Service } from '@/types/services';
 import { styles as videoMonitorStyles } from '@/components/modals/VideoMonitorModal.styles';
+import { useCallEndedSocket } from '@/hooks/useCallEndedSocket';
 
 const VideoMonitorScreen: React.FC = () => {
 	const navigation = useNavigation();
 	const route = useRoute<any>();
 	const auth = useAuth();
+	const routeAutoStart = route.params?.autoStart === true;
+	const routeAgentId = typeof route.params?.agentId === 'string' ? route.params.agentId : undefined;
 	const incomingCallId = typeof route.params?.callId === 'string' ? route.params.callId : null;
 	const incomingUserName = typeof route.params?.userName === 'string' ? route.params.userName : null;
 	const [activeService, setActiveService] = useState<string | null>(Service.VIDEO);
@@ -41,8 +44,9 @@ const VideoMonitorScreen: React.FC = () => {
 	const [isAudioCall, setIsAudioCall] = useState(false);
 	const [joinExistingCall, setJoinExistingCall] = useState(false);
 	const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
+	const autoStartTriggeredRef = useRef(false);
 
-	const startCall = useCallback(async (callType: 'video' | 'audio', reason: string) => {
+	const startCall = useCallback(async (callType: 'video' | 'audio', reason: string, agentId?: string) => {
 		try {
 			setIsStartingCall(true);
 			setJoinExistingCall(false);
@@ -94,6 +98,7 @@ const VideoMonitorScreen: React.FC = () => {
 					callType,
 					userName,
 					reason,
+					agentId,
 					priority: reason.includes('Emergency') ? 'emergency' : 'medium',
 				});
 
@@ -126,7 +131,7 @@ const VideoMonitorScreen: React.FC = () => {
 	}, [auth.user]);
 
 	useEffect(() => {
-		if (!auth.isAuthReady || !auth.user?.id || !incomingCallId || showCall) {
+		if (!auth.isAuthReady || !auth.user?.id || !incomingCallId || showCall || routeAutoStart) {
 			return;
 		}
 
@@ -147,7 +152,45 @@ const VideoMonitorScreen: React.FC = () => {
 		setActiveService(null);
 		setIsMonitoring(true);
 		console.log('[VideoMonitorScreen] Joining incoming call directly:', incomingCallId);
-	}, [auth.isAuthReady, auth.user, incomingCallId, incomingUserName, showCall]);
+	}, [auth.isAuthReady, auth.user, incomingCallId, incomingUserName, routeAutoStart, showCall]);
+
+	useEffect(() => {
+		if (!routeAutoStart || showCall || isStartingCall || !auth.isAuthReady || !auth.user?.id) {
+			return;
+		}
+
+		if (autoStartTriggeredRef.current) {
+			return;
+		}
+
+		autoStartTriggeredRef.current = true;
+
+		const startAutoCall = async () => {
+			try {
+				let cameraReady = cameraPermission;
+				if (!cameraReady) {
+					const cameraResult = await Camera.requestCameraPermissionsAsync();
+					const micResult = await Camera.requestMicrophonePermissionsAsync();
+					cameraReady = cameraResult.status === 'granted' && micResult.status === 'granted';
+					setCameraPermission(cameraResult.status === 'granted');
+				}
+
+				if (!cameraReady) {
+					Alert.alert('Permissions Required', 'Camera and microphone permissions are required to start a video call.');
+					navigation.goBack();
+					return;
+				}
+
+				await startCall('video', 'Video call initiated from chat', routeAgentId);
+			} catch (error) {
+				console.error('[VideoMonitorScreen] Failed to auto-start chat video call:', error);
+				Alert.alert('Call Error', 'Unable to start video call from chat. Please try again.');
+				navigation.goBack();
+			}
+		};
+
+		void startAutoCall();
+	}, [auth.isAuthReady, auth.user, cameraPermission, isStartingCall, navigation, routeAgentId, routeAutoStart, showCall, startCall]);
 
 	React.useEffect(() => {
 		const checkPermission = async () => {
@@ -258,6 +301,26 @@ const VideoMonitorScreen: React.FC = () => {
 		Alert.alert('Call Error', error);
 		handleEndVideoSession();
 	};
+
+	useCallEndedSocket(
+		[callSession?.id, callSession?.roomCode],
+		(reason) => {
+			if (!showCall || !callSession) {
+				return;
+			}
+
+			console.log('[VideoMonitorScreen] Received call.ended event for active session:', {
+				sessionId: callSession.id,
+				reason,
+			});
+
+			void handleEndVideoSession();
+		},
+		{
+			closeOnAnyCallEnded: true,
+			debugLabel: 'VideoMonitorScreen.callEnded',
+		}
+	);
 
 	const handleClose = useCallback(() => {
 		setActiveService(null);

@@ -3,6 +3,8 @@ import {
   View,
   Text,
   Modal,
+  Alert,
+  ActivityIndicator,
   TouchableOpacity,
   ScrollView,
   TextInput,
@@ -19,6 +21,7 @@ interface ChatMessage {
   id: string;
   text: string;
   sender: 'user' | 'agent' | 'system';
+  senderName?: string | null;
   timestamp: Date;
   messageType?: 'TEXT' | 'SYSTEM' | 'MEDIA';
   systemEvent?:
@@ -37,12 +40,17 @@ interface ChatBoxProps {
   chatInput: string;
   isTyping: boolean;
   isSending?: boolean;
+  isLoading?: boolean;
+  isInitiatingCall?: boolean;
+  callInitiationLabel?: string | null;
   threadStatus?: 'OPEN' | 'RESOLVED' | 'CLOSED' | null;
   hasAssignedAgent?: boolean;
+  agentName?: string | null;
   isResolving?: boolean;
   onClose: () => void;
   onChatInputChange: (text: string) => void;
   onSendMessage: (text?: string) => void;
+  onInitiateCall?: (type: 'VIDEO' | 'AUDIO') => void;
   onResolveChat?: () => void;
   formatChatTime: (date: Date) => string;
 }
@@ -53,21 +61,52 @@ const ChatBox: React.FC<ChatBoxProps> = ({
   chatInput,
   isTyping,
   isSending,
+  isLoading,
+  isInitiatingCall,
+  callInitiationLabel,
   threadStatus,
   hasAssignedAgent,
+  agentName,
   isResolving,
   onClose,
   onChatInputChange,
   onSendMessage,
+  onInitiateCall,
   onResolveChat,
   formatChatTime,
 }) => {
+    const handleCallPress = () => {
+      if (!onInitiateCall) {
+        return;
+      }
+
+      Alert.alert('Start call', 'Choose call type', [
+        {
+          text: 'Audio',
+          onPress: () => onInitiateCall('AUDIO'),
+        },
+        {
+          text: 'Video',
+          onPress: () => onInitiateCall('VIDEO'),
+        },
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+      ]);
+    };
+
   const quickResponses = ['I need help', 'Emergency assistance', 'Check my location', 'I\'m safe'];
   const insets = useSafeAreaInsets();
   const scrollViewRef = useRef<ScrollView>(null);
   const canResolve = threadStatus === 'OPEN' && !!onResolveChat;
   const statusText = threadStatus || 'OPEN';
-  const headerTitle = hasAssignedAgent ? 'Security Agent' : 'Support Team';
+  const normalizedAgentName = agentName?.trim() || null;
+  const headerTitle = isLoading
+    ? 'Checkin..'
+    : hasAssignedAgent && normalizedAgentName
+      ? normalizedAgentName
+      : 'Security Agent';
   const headerPresence = hasAssignedAgent ? 'Assigned' : 'Waiting for agent';
 
   const getSystemEventText = (event?: ChatMessage['systemEvent']): string => {
@@ -152,7 +191,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({
 
             <View style={styles.chatAgentInfo}>
               <View style={styles.chatAgentAvatar}>
-                <Text style={styles.chatAgentInitials}>SA</Text>
+                {isLoading ? (
+                  <ActivityIndicator size="small" color="#ffffff" />
+                ) : (
+                  <Text style={styles.chatAgentInitials}>SA</Text>
+                )}
               </View>
               <View style={styles.chatAgentDetails}>
                 <Text style={styles.chatAgentName}>{headerTitle}</Text>
@@ -160,9 +203,9 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                   <View style={styles.chatOnlineDot} />
                   <Text style={styles.chatOnlineText}>{headerPresence}</Text>
                 </View>
-                <View style={styles.chatThreadStatusBadge}>
+                {/* <View style={styles.chatThreadStatusBadge}>
                   <Text style={styles.chatThreadStatusText}>Status: {statusText}</Text>
-                </View>
+                </View> */}
               </View>
             </View>
 
@@ -183,12 +226,18 @@ const ChatBox: React.FC<ChatBoxProps> = ({
 
             <TouchableOpacity
               style={styles.chatCallButton}
+              onPress={handleCallPress}
+              disabled={!onInitiateCall || isLoading || isInitiatingCall}
               accessible={true}
               accessibilityLabel="Call security agent"
               accessibilityRole="button"
               hitSlop={{ top: 8, bottom: 8, left: 8, right: 8 }}
             >
-              <MaterialIcons name="phone" size={22} color="#ffffff" />
+              {isInitiatingCall ? (
+                <ActivityIndicator size="small" color="#ffffff" />
+              ) : (
+                <MaterialIcons name="phone" size={22} color="#ffffff" />
+              )}
             </TouchableOpacity>
           </View>
 
@@ -210,6 +259,11 @@ const ChatBox: React.FC<ChatBoxProps> = ({
               });
             }}
           >
+            {isLoading && chatMessages.length === 0 && (
+              <View style={{ paddingVertical: 24, alignItems: 'center' }}>
+                <ActivityIndicator size="small" color="#000000" />
+              </View>
+            )}
               {chatMessages.map((message) => {
               const isSystem = message.sender === 'system' || message.messageType === 'SYSTEM';
 
@@ -263,6 +317,17 @@ const ChatBox: React.FC<ChatBoxProps> = ({
                     <View style={styles.chatTypingDot} />
                     <View style={styles.chatTypingDot} />
                   </View>
+                </View>
+              </View>
+            )}
+
+            {isInitiatingCall && (
+              <View style={[styles.chatMessageBubble, styles.chatSystemMessageWrap]}>
+                <View style={styles.chatCallStartingBubble}>
+                  <ActivityIndicator size="small" color="#4DA8DA" />
+                  <Text style={styles.chatCallStartingText}>
+                    {callInitiationLabel || 'Starting call...'}
+                  </Text>
                 </View>
               </View>
             )}

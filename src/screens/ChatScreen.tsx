@@ -1,4 +1,4 @@
-import React, { useCallback, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Alert } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import ChatBox from '@/components/chat/ChatBox';
@@ -17,6 +17,19 @@ export default function ChatScreen() {
   const [chatInput, setChatInput] = useState('');
   const [isSendingChat, setIsSendingChat] = useState(false);
   const [isResolvingChat, setIsResolvingChat] = useState(false);
+  const [isInitiatingCall, setIsInitiatingCall] = useState(false);
+  const [callInitiationLabel, setCallInitiationLabel] = useState<string | null>(null);
+  const isCallInitiationInFlightRef = useRef(false);
+
+  useEffect(() => {
+    const unsubscribe = (navigation as any).addListener('focus', () => {
+      setIsInitiatingCall(false);
+      setCallInitiationLabel(null);
+      isCallInitiationInFlightRef.current = false;
+    });
+
+    return unsubscribe;
+  }, [navigation]);
 
   const handleClose = useCallback(() => {
     navigation.goBack();
@@ -74,19 +87,68 @@ export default function ChatScreen() {
     );
   }, [chat.resolveActiveThread, chat.threadStatus, isResolvingChat]);
 
+  const handleInitiateCall = useCallback(async (type: 'VIDEO' | 'AUDIO') => {
+    if (isCallInitiationInFlightRef.current) {
+      return;
+    }
+
+    isCallInitiationInFlightRef.current = true;
+
+    if (!chat.activeAgentId) {
+      Alert.alert('No agent assigned', 'Please wait until an agent is assigned before starting a call.');
+      setIsInitiatingCall(false);
+      setCallInitiationLabel(null);
+      isCallInitiationInFlightRef.current = false;
+      return;
+    }
+
+    const callTypeLabel = type === 'VIDEO' ? 'Video' : 'Audio';
+    setCallInitiationLabel(`Starting ${callTypeLabel.toLowerCase()} call...`);
+    setIsInitiatingCall(true);
+    const callId = `${type.toLowerCase()}-${Date.now()}`;
+
+    try {
+      await chat.sendSystemMessage(`${callTypeLabel} call initiated`);
+    } catch (error) {
+      console.error('[ChatScreen] Failed to send call initiation system message:', error);
+      // Do not block call start if system-message post fails.
+    }
+
+    if (type === 'VIDEO') {
+      (navigation as any).navigate('VideoMonitor', {
+        autoStart: true,
+        callId,
+        agentId: chat.activeAgentId,
+      });
+      isCallInitiationInFlightRef.current = false;
+      return;
+    }
+
+    (navigation as any).navigate('AudioCall', {
+      callId,
+      agentId: chat.activeAgentId,
+    });
+    isCallInitiationInFlightRef.current = false;
+  }, [chat.activeAgentId, chat.sendSystemMessage, navigation]);
+
   return (
     <ChatBox
       visible={true}
       chatMessages={chat.messages}
       chatInput={chatInput}
       isTyping={chat.isTyping}
+      isLoading={chat.loading}
+      isInitiatingCall={isInitiatingCall}
+      callInitiationLabel={callInitiationLabel}
       isSending={isSendingChat || chat.loading}
       threadStatus={chat.threadStatus}
       hasAssignedAgent={chat.hasAssignedAgent}
+      agentName={chat.agentName}
       isResolving={isResolvingChat}
       onClose={handleClose}
       onChatInputChange={setChatInput}
       onSendMessage={handleSendMessage}
+      onInitiateCall={handleInitiateCall}
       onResolveChat={handleResolveChat}
       formatChatTime={formatChatTime}
     />

@@ -14,6 +14,7 @@
 import { StreamVideoClient, Call } from '@stream-io/video-react-native-sdk';
 import {
   initiateCallSession,
+  initiateCallSessionWithAgent,
   updateCallSessionStatus,
   endCallSession,
   CallType,
@@ -135,12 +136,18 @@ export const VideoCallService = {
     try {
       const callId = generateCallId();
 
-      await initiateCallSession({
+      const payload = {
         callType: CallType.VIDEO,
         serviceType: resolveServiceType(priority, contextReason),
         priority: mapPriority(priority),
         callId,
-      });
+      };
+
+      if (agentId) {
+        await initiateCallSessionWithAgent(payload, agentId);
+      } else {
+        await initiateCallSession(payload);
+      }
 
       return { success: true, callSessionId: callId };
     } catch (error: any) {
