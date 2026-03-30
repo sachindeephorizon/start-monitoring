@@ -139,7 +139,7 @@ export const menuStyles = StyleSheet.create({
     height: MENU_TOKENS.dimensions.closeButtonSize,
     justifyContent: "center",
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.08)",
+    backgroundColor: "rgba(255,255,255,0.2)",
     borderRadius: MENU_TOKENS.dimensions.closeButtonSize / 2,
   },
 

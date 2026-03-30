@@ -12,7 +12,7 @@ import {
   Platform,
   Keyboard,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { styles } from './ChatBox.styles';
  
@@ -167,14 +167,14 @@ const ChatBox: React.FC<ChatBoxProps> = ({
       visible={visible}
       onRequestClose={onClose}
     >
-      <SafeAreaView style={styles.chatContainer} edges={['top']}>
+      <View style={styles.chatContainer}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={Platform.OS === 'ios' ? 0 : 0}
         >
           {/* Chat Header */}
-          <View style={styles.chatHeader}>
+          <View style={[styles.chatHeader, { paddingTop: insets.top + 10 }]}>
             <TouchableOpacity
               style={styles.chatBackButton}
               onPress={() => {
@@ -398,7 +398,7 @@ const ChatBox: React.FC<ChatBoxProps> = ({
             </View>
           </View>
         </KeyboardAvoidingView>
-      </SafeAreaView>
+      </View>
     </Modal>
   );
 };
