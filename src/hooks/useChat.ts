@@ -25,6 +25,7 @@ export interface ChatMessage {
   id: string;
   text: string;
   sender: 'user' | 'agent' | 'system';
+  senderName?: string | null;
   timestamp: Date;
   messageType: 'TEXT' | 'SYSTEM' | 'MEDIA';
   systemEvent?: ApiChatMessage['systemEvent'];
@@ -37,9 +38,12 @@ export interface UseChatReturn {
   error: string | null;
   isTyping: boolean;
   activeThreadId: string | null;
+  activeAgentId: string | null;
   threadStatus: ChatThread['status'] | null;
   hasAssignedAgent: boolean;
+  agentName: string | null;
   sendMessage: (content: string) => Promise<void>;
+  sendSystemMessage: (content: string) => Promise<void>;
   refreshMessages: () => Promise<void>;
   resolveActiveThread: () => Promise<void>;
 }
@@ -78,10 +82,23 @@ const mapMessageToUi = (
     id: message.id,
     text: message.content?.trim() || '',
     sender,
+    senderName: message.sender?.name?.trim() || null,
     timestamp: new Date(message.createdAt),
     messageType: message.messageType,
     systemEvent: message.systemEvent ?? null,
   };
+};
+
+const getLatestAgentName = (messages: ChatMessage[]): string | null => {
+  for (let i = messages.length - 1; i >= 0; i -= 1) {
+    const message = messages[i];
+    const trimmedName = message.senderName?.trim();
+    if (message.sender === 'agent' && trimmedName) {
+      return trimmedName;
+    }
+  }
+
+  return null;
 };
 
 export function useChat(options?: UseChatOptions): UseChatReturn {
@@ -97,8 +114,10 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeAgentId, setActiveAgentId] = useState<string | null>(null);
   const [threadStatus, setThreadStatus] = useState<ChatThread['status'] | null>(null);
   const [hasAssignedAgent, setHasAssignedAgent] = useState(false);
+  const [agentName, setAgentName] = useState<string | null>(null);
   const hasConnectedOnceRef = useRef(false);
   const activeThreadIdRef = useRef<string | null>(null);
   const messagesRef = useRef<ChatMessage[]>([]);
@@ -134,6 +153,7 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
       .sort((a, b) => a.timestamp.getTime() - b.timestamp.getTime());
 
     setMessages(mapped);
+    setAgentName(getLatestAgentName(mapped));
 
     const unread = mapped.filter((message) => message.sender === 'agent').length;
     setUnreadCount(unread);
@@ -166,8 +186,14 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
 
   const refreshThreadState = useCallback(async (threadId: string) => {
     const thread = await getThreadDetails(threadId);
+    const assignedAgentId = thread?.currentAgentId || null;
+    const assigned = !!assignedAgentId;
     setThreadStatus(thread?.status ?? null);
-    setHasAssignedAgent(!!thread?.currentAgentId);
+    setHasAssignedAgent(assigned);
+    setActiveAgentId(assignedAgentId);
+    if (!assigned) {
+      setAgentName(null);
+    }
   }, []);
 
   const waitForAgentAssignment = useCallback(async (
@@ -183,6 +209,9 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
 
       setThreadStatus(thread?.status ?? null);
       setHasAssignedAgent(assigned);
+      if (!assigned) {
+        setAgentName(null);
+      }
 
       if (assigned) {
         return true;
@@ -205,6 +234,10 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
       if (existingThread?.status === 'OPEN') {
         setThreadStatus(existingThread.status);
         setHasAssignedAgent(!!existingThread.currentAgentId);
+        setActiveAgentId(existingThread.currentAgentId || null);
+        if (!existingThread.currentAgentId) {
+          setAgentName(null);
+        }
         return activeThreadId;
       }
     }
@@ -215,10 +248,12 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
     setActiveThreadId(thread.id);
     setThreadStatus(thread.status);
     setHasAssignedAgent(!!thread.currentAgentId);
+    setActiveAgentId(thread.currentAgentId || null);
 
     if (didSwitchThread) {
       setMessages([]);
       setUnreadCount(0);
+      setAgentName(null);
     }
 
     return thread.id;
@@ -239,6 +274,8 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
           setActiveThreadId(requestedThread.id);
           setThreadStatus(requestedThread.status);
           setHasAssignedAgent(!!requestedThread.currentAgentId);
+          setActiveAgentId(requestedThread.currentAgentId || null);
+          setAgentName(null);
 
           await Promise.all([
             loadMessages(requestedThread.id),
@@ -253,6 +290,8 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
       setActiveThreadId(thread.id);
       setThreadStatus(thread.status);
       setHasAssignedAgent(!!thread.currentAgentId);
+      setActiveAgentId(thread.currentAgentId || null);
+      setAgentName(null);
 
       await Promise.all([
         loadMessages(thread.id),
@@ -300,19 +339,29 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
         id: parsed.data.messageId,
         text: parsed.data.content?.trim() || '',
         sender,
+        senderName: parsed.data.senderName?.trim() || null,
         timestamp: new Date(parsed.data.createdAt),
         messageType: parsed.data.messageType,
         systemEvent: parsed.data.systemEvent ?? null,
       });
+
+      if (sender === 'agent') {
+        const liveAgentName = parsed.data.senderName?.trim();
+        if (liveAgentName) {
+          setAgentName(liveAgentName);
+        }
+      }
       return;
     }
 
     if (parsed.event === ChatRealtimeEvent.THREAD_ASSIGNED) {
       setHasAssignedAgent(true);
+      setActiveAgentId(parsed.data.newAgentId || null);
       appendMessageIfMissing({
         id: `system-assigned-${String(parsed.data.assignedAt)}`,
         text: 'Agent joined your chat',
         sender: 'system',
+        senderName: null,
         timestamp: new Date(parsed.data.assignedAt),
         messageType: 'SYSTEM',
         systemEvent: 'AGENT_ASSIGNED',
@@ -330,6 +379,7 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
         id: `system-resolved-${String(parsed.data.resolvedAt)}`,
         text: 'Chat resolved',
         sender: 'system',
+        senderName: null,
         timestamp: new Date(parsed.data.resolvedAt),
         messageType: 'SYSTEM',
         systemEvent: 'CHAT_RESOLVED',
@@ -413,6 +463,7 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
           id: waitingMessageId,
           text: 'Starting a new chat. Waiting for an agent to connect...',
           sender: 'system',
+          senderName: null,
           timestamp: new Date(),
           messageType: 'SYSTEM',
           systemEvent: null,
@@ -432,6 +483,7 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
         id: tempMessageId,
         text: trimmed,
         sender: 'user',
+        senderName: user?.name?.trim() || user?.email?.trim() || null,
         timestamp: optimisticTimestamp,
         messageType: 'TEXT',
         systemEvent: null,
@@ -452,6 +504,28 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
       throw err;
     }
   }, [appendMessageIfMissing, ensureThread, handleError, refreshThreadState, replaceOptimisticMessage, threadStatus, user?.id, waitForAgentAssignment]);
+
+  const sendSystemMessage = useCallback(async (content: string) => {
+    const trimmed = content.trim();
+    if (!trimmed) {
+      return;
+    }
+
+    try {
+      setError(null);
+      const threadId = await ensureThread();
+
+      await sendThreadMessage(threadId, {
+        content: trimmed,
+        messageType: 'SYSTEM',
+      });
+
+      void refreshThreadState(threadId).catch(() => {});
+    } catch (err) {
+      await handleError(err, 'Unable to send system message, try again');
+      throw err;
+    }
+  }, [ensureThread, handleError, refreshThreadState]);
 
   const refreshMessages = useCallback(async () => {
     try {
@@ -489,9 +563,12 @@ export function useChat(options?: UseChatOptions): UseChatReturn {
     error,
     isTyping: false,
     activeThreadId,
+    activeAgentId,
     threadStatus,
     hasAssignedAgent,
+    agentName,
     sendMessage,
+    sendSystemMessage,
     refreshMessages,
     resolveActiveThread,
   };

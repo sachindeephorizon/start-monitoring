@@ -1,13 +1,16 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, ActivityIndicator, View, StyleSheet } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import AudioCallInterface from '@/components/AudioCallInterface';
 import { useAuth } from '@/core/auth';
 
 const AudioCallScreen: React.FC = () => {
   const navigation = useNavigation();
+  const route = useRoute<any>();
   const auth = useAuth();
   const [generatedCallId, setGeneratedCallId] = useState<string | null>(null);
+  const routeCallId = typeof route.params?.callId === 'string' ? route.params.callId : null;
+  const routeAgentId = typeof route.params?.agentId === 'string' ? route.params.agentId : undefined;
 
   const effectiveUserName = useMemo(() => {
     const fromProfile = auth.profile?.name || auth.profile?.email;
@@ -27,16 +30,16 @@ const AudioCallScreen: React.FC = () => {
       return;
     }
 
-    if (generatedCallId) {
+    if (routeCallId || generatedCallId) {
       return;
     }
 
     const timestamp = Date.now();
     const shortUserId = user.id.substring(0, 8);
     setGeneratedCallId(`audio-${shortUserId}-${timestamp}`);
-  }, [auth.isAuthReady, auth.user, generatedCallId, navigation]);
+  }, [auth.isAuthReady, auth.user, generatedCallId, navigation, routeCallId]);
 
-  const callId = generatedCallId;
+  const callId = routeCallId || generatedCallId;
   const userName = effectiveUserName;
 
   useEffect(() => {
@@ -74,6 +77,7 @@ const AudioCallScreen: React.FC = () => {
     <AudioCallInterface
       callId={callId}
       userName={userName}
+      agentId={routeAgentId}
       onCallEnd={handleCallEnd}
       onCallError={handleCallError}
     />

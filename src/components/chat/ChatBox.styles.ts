@@ -7,7 +7,7 @@ export const styles = StyleSheet.create({
   },
   chatHeader: {
     backgroundColor: '#4DA8DA',
-    paddingTop: 50,
+    paddingTop: 10,
     paddingBottom: 16,
     paddingHorizontal: 16,
     flexDirection: 'row',
@@ -151,6 +151,23 @@ export const styles = StyleSheet.create({
     fontSize: 12,
     color: '#5c6c7a',
     textAlign: 'center',
+    fontWeight: '500',
+  },
+  chatCallStartingBubble: {
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ffffff',
+    borderRadius: 16,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderWidth: 1,
+    borderColor: '#dce6ec',
+  },
+  chatCallStartingText: {
+    marginLeft: 8,
+    fontSize: 13,
+    color: '#48606f',
     fontWeight: '500',
   },
   chatSystemMessageTime: {

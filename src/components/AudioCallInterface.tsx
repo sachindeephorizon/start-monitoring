@@ -29,10 +29,12 @@ import { formatDuration } from '@/utils/time';
 import { useInCallAudio } from '@/hooks/useInCallAudio';
 import { backgroundCallNotificationService } from '@/services/backgroundCallNotification.service';
 import { useAuth } from '@/core/auth';
+import { useCallEndedSocket } from '@/hooks/useCallEndedSocket';
 
 interface AudioCallInterfaceProps {
   callId: string;
   userName: string;
+  agentId?: string;
   onCallEnd: () => void;
   onCallError: (error: string) => void;
 }
@@ -40,6 +42,7 @@ interface AudioCallInterfaceProps {
 const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
   callId,
   userName,
+  agentId,
   onCallEnd,
   onCallError,
 }) => {
@@ -59,6 +62,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
   const connectedSecondsRef = useRef(0);
   const connectedSinceRef = useRef<number | null>(null);
   const listenerCleanupRef = useRef<Array<() => void>>([]);
+  const remoteEndHandledRef = useRef(false);
 
   // Use in-call audio hook for audio routing
   useInCallAudio(callStatus === 'connected', isSpeakerOn, 'audio_call');
@@ -196,7 +200,7 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
       console.log('[AudioCallInterface] Audio call client ready');
 
       // Create audio call instance
-      const callInstance = await audioCallService.createAudioCall(callId, true);
+      const callInstance = await audioCallService.createAudioCall(callId, true, agentId);
       console.log('[AudioCallInterface] Audio call instance created:', callId);
 
       const evaluateConnectionState = () => {
@@ -279,6 +283,36 @@ const AudioCallInterface: React.FC<AudioCallInterfaceProps> = ({
     backgroundCallNotificationService.dismissCallNotification(callId).catch(() => {});
     onCallEnd();
   };
+
+  useCallEndedSocket(
+    [callId],
+    (reason) => {
+      if (remoteEndHandledRef.current) {
+        return;
+      }
+
+      remoteEndHandledRef.current = true;
+
+      console.log('[AudioCallInterface] Received call.ended event for active call:', {
+        callId,
+        reason,
+      });
+
+      clearDurationTimer();
+      setCallStatus('ended');
+
+      if (callRef.current?.state?.callingState !== CallingState.LEFT) {
+        void callRef.current?.leave?.().catch(() => {});
+      }
+
+      backgroundCallNotificationService.dismissCallNotification(callId).catch(() => {});
+      onCallEnd();
+    },
+    {
+      closeOnAnyCallEnded: true,
+      debugLabel: 'AudioCallInterface.callEnded',
+    }
+  );
 
   if (isConnecting) {
     return (
