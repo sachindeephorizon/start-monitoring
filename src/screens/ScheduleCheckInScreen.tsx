@@ -14,6 +14,7 @@ import {
   ScrollView,
   TextInput,
   StyleSheet,
+  ActivityIndicator,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
@@ -24,7 +25,7 @@ import { EmergencyPasskeyModal } from '@/components/modals/EmergencyPasskeyModal
 import { styles } from '@/components/modals/CheckInModal.styles';
 import { modalStyles } from '@/styles/Modal.styles';
 import { CheckInTime, CheckInFrequency } from '@/types/checkin';
-import { useCheckIn } from '@/hooks/useCheckIn';
+import { useCheckIn } from '../hooks/useCheckIn';
 import { formatUserFriendlyDate } from '@/utils/timeHelpers';
 import { generateFutureInstances } from '@/utils/recurring';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
@@ -38,22 +39,13 @@ const formatTime = (time: CheckInTime): string => {
 
 export default function ScheduleCheckInScreen() {
   const navigation = useNavigation();
-  const checkIn = useCheckIn();
+  const checkIn = useCheckIn({ enableDueWatcher: true });
 
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
   const [notesText, setNotesText] = useState('');
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
-
-  // Check subscription access on mount
-  useEffect(() => {
-    checkSubscriptionAccess('Schedule Check In').then((hasAccess) => {
-      if (!hasAccess) {
-        navigation.goBack();
-      }
-    }).catch(() => {});
-  }, []);
 
   // Initialize date to today if not set
   useEffect(() => {
@@ -304,17 +296,20 @@ export default function ScheduleCheckInScreen() {
         <View style={styles.upcomingSection}>
           <Text style={styles.upcomingSectionTitle}>Upcoming Security Checks</Text>
 
-          {(() => {
-            const now = Date.now();
-            const upcomingCheckIns = checkIn.scheduledCheckIns.filter(
-              (item) => new Date(item.scheduled_at).getTime() > now
-            );
+          {checkIn.isLoadingCheckIns ? (
+            <View style={styles.noCheckInsContainer}>
+              <ActivityIndicator size="small" color="#2C3E50" />
+              <Text style={[styles.noCheckInsText, { marginTop: 8 }]}>Loading upcoming check-ins...</Text>
+            </View>
+          ) : (
+            (() => {
+            const upcomingCheckIns = checkIn.scheduledCheckIns;
             return upcomingCheckIns.length > 0 ? (
               upcomingCheckIns.map((checkInItem) => {
-                const scheduledDate = new Date(checkInItem.scheduled_at);
+                const scheduledDate = new Date(checkInItem.startAt);
                 const dateString = formatFullDateLabel(scheduledDate);
                 const timeString = scheduledDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-                const frequency = 'One-time';
+                const frequency = checkInItem.frequency;
 
                 return (
                   <View key={checkInItem.id} style={styles.upcomingCheckIn}>
@@ -350,7 +345,8 @@ export default function ScheduleCheckInScreen() {
                 <Text style={styles.noCheckInsText}>No upcoming security checks</Text>
               </View>
             );
-          })()}
+          })()
+          )}
         </View>
       </ScrollView>
 
@@ -391,7 +387,7 @@ export default function ScheduleCheckInScreen() {
           iconColor="#2c3e50"
           isEmergency={false}
           emergencyCountdown={checkIn.passkeyCountdown}
-          emergencyDeadlineMs={checkIn.activeCheckIn ? new Date(checkIn.activeCheckIn.scheduled_at).getTime() + 30 * 1000 : undefined}
+          emergencyDeadlineMs={checkIn.activeCheckIn ? new Date(checkIn.activeCheckIn.scheduledAt).getTime() + 30 * 1000 : undefined}
           enteredPasskey={checkIn.enteredPasskey}
           onPasskeyChange={checkIn.setEnteredPasskey}
           isLoading={checkIn.isPasskeyProcessing}

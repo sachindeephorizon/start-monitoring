@@ -30,6 +30,7 @@ import ScheduleCheckInScreen from '@/screens/ScheduleCheckInScreen';
 import BookBodyguardScreen from '@/screens/BookBodyguardScreen';
 import VideoMonitorScreen from '@/screens/VideoMonitorScreen';
 import AudioCallScreen from '@/screens/AudioCallScreen';
+import CheckInPasskeyHost from '@/components/checkin/CheckInPasskeyHost';
 
 const Stack = createStackNavigator();
 
@@ -95,46 +96,50 @@ export function MainNavigator() {
   }, []);
 
   return (
-    <Stack.Navigator
-      screenOptions={{
-        headerShown: false,
-        gestureEnabled: true,
-      }}
-      initialRouteName="Home"
-    >
-      <Stack.Screen name="Home" component={HomeScreen} />
-      <Stack.Screen name="Profile" component={ProfileScreen} />
-      <Stack.Screen name="History" component={HistoryScreen} />
-      <Stack.Screen name="Subscription" component={SubscriptionScreen} />
-      <Stack.Screen 
-        name="SubscriptionPlans" 
-        component={SubscriptionPlansScreen}
-        // Android: use normal card presentation (better gestures/scroll, avoids modal overlays).
-        // iOS: modal is fine for a paywall-like screen.
-        options={Platform.OS === 'ios' ? { presentation: 'modal' } : undefined}
-      />
-      <Stack.Screen name="Family" component={FamilyScreen} />
-      <Stack.Screen name="EmergencyContacts" component={EmergencyContactsScreen} />
-      <Stack.Screen name="TrialExpired">
-        {({ navigation }: any) => (
-          <TrialExpiredScreen
-            navigation={navigation}
-            onSubscribe={() => {
-              navigation.navigate('SubscriptionPlans');
-            }}
-          />
-        )}
-      </Stack.Screen>
-      <Stack.Screen name="Policies" component={PoliciesScreen} />
-      <Stack.Screen name="CheckIn" component={CheckInScreen} />
-      <Stack.Screen name="Chat" component={ChatScreen} />
-      <Stack.Screen name="Emergency" component={EmergencyScreen} />
-      <Stack.Screen name="Tracking" component={TrackingScreen} />
-      <Stack.Screen name="ScheduleCheckIn" component={ScheduleCheckInScreen} />
-      <Stack.Screen name="BookBodyguard" component={BookBodyguardScreen} />
-      <Stack.Screen name="VideoMonitor" component={VideoMonitorScreen} />
-      <Stack.Screen name="AudioCall" component={AudioCallScreen} />
-    </Stack.Navigator>
+    <>
+      <Stack.Navigator
+        screenOptions={{
+          headerShown: false,
+          gestureEnabled: true,
+        }}
+        initialRouteName="Home"
+      >
+        <Stack.Screen name="Home" component={HomeScreen} />
+        <Stack.Screen name="Profile" component={ProfileScreen} />
+        <Stack.Screen name="History" component={HistoryScreen} />
+        <Stack.Screen name="Subscription" component={SubscriptionScreen} />
+        <Stack.Screen 
+          name="SubscriptionPlans" 
+          component={SubscriptionPlansScreen}
+          // Android: use normal card presentation (better gestures/scroll, avoids modal overlays).
+          // iOS: modal is fine for a paywall-like screen.
+          options={Platform.OS === 'ios' ? { presentation: 'modal' } : undefined}
+        />
+        <Stack.Screen name="Family" component={FamilyScreen} />
+        <Stack.Screen name="EmergencyContacts" component={EmergencyContactsScreen} />
+        <Stack.Screen name="TrialExpired">
+          {({ navigation }: any) => (
+            <TrialExpiredScreen
+              navigation={navigation}
+              onSubscribe={() => {
+                navigation.navigate('SubscriptionPlans');
+              }}
+            />
+          )}
+        </Stack.Screen>
+        <Stack.Screen name="Policies" component={PoliciesScreen} />
+        <Stack.Screen name="CheckIn" component={CheckInScreen} />
+        <Stack.Screen name="Chat" component={ChatScreen} />
+        <Stack.Screen name="Emergency" component={EmergencyScreen} />
+        <Stack.Screen name="Tracking" component={TrackingScreen} />
+        <Stack.Screen name="ScheduleCheckIn" component={ScheduleCheckInScreen} />
+        <Stack.Screen name="BookBodyguard" component={BookBodyguardScreen} />
+        <Stack.Screen name="VideoMonitor" component={VideoMonitorScreen} />
+        <Stack.Screen name="AudioCall" component={AudioCallScreen} />
+      </Stack.Navigator>
+
+      <CheckInPasskeyHost />
+    </>
   );
 }
 

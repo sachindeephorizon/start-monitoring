@@ -1,18 +1,21 @@
 /**
  * Subscription Access Utility
  * 
- * Checks if user has active subscription or trial access
+ * Checks if user has active subscription access.
+ *
+ * NOTE:
+ * - The app now uses a single plan model (no per-feature access rules).
+ * - This utility is kept for non-hook call sites and mirrors useSubscription logic.
  */
 
 import { Alert } from 'react-native';
-import { SubscriptionService } from '@/services/subscription.service';
+import { getUserSubscriptions, SubscriptionStatus, UserSubscription } from '@/api/auth';
 import { isCallPriorityActive } from '@/services/callPriority';
 import { navigationRef } from '@/navigation/navigationRef';
 
 /**
- * Check if user has active subscription or trial access
- * Shows "Subscribe to use" alert if access is denied
- * @param featureName - Name of the feature being accessed (optional, for better UX)
+ * Check if user has active subscription access.
+ * @param featureName - Kept for API compatibility. Ignored for access logic.
  * @returns Promise<boolean> - true if user has access, false otherwise
  */
 export async function checkSubscriptionAccess(featureName?: string): Promise<boolean> {
@@ -22,63 +25,22 @@ export async function checkSubscriptionAccess(featureName?: string): Promise<boo
     if (isCallPriorityActive()) {
       return true;
     }
-    const { hasAccess, error } = await SubscriptionService.hasActiveSubscription();
 
-    if (hasAccess) {
-      return true;
-    }
+    const subscriptions = await getUserSubscriptions();
+    const hasAccess = hasActiveSubscription(subscriptions);
+    if (hasAccess) return true;
 
-    // If hasActiveSubscription returned an error (network, session, etc.),
-    // allow access rather than blocking with a misleading "subscribe" message.
-    // Server-side RLS still enforces subscription for actual operations.
-    if (error) {
-      console.warn('Subscription check returned error — allowing access (graceful degradation):', error);
-      return true;
-    }
-
-    // Check trial status to provide better messaging
-    const { isTrialActive, daysRemaining, error: trialError } = await SubscriptionService.getTrialStatus();
-
-    if (isTrialActive) {
-      // Trial is still active, allow access
-      return true;
-    }
-
-    // If trial check also had an error, allow access (graceful degradation)
-    if (trialError) {
-      console.warn('Trial check returned error — allowing access (graceful degradation):', trialError);
-      return true;
-    }
-
-    // Trial has genuinely ended - navigate to TrialExpired screen instead of showing alert
+    // Single-plan model: no feature-specific gating.
+    // Navigate to subscription plans when access is missing.
     if (navigationRef.isReady()) {
       try {
-        // Navigate to TrialExpired screen in Main navigator
-        const rootState = navigationRef.getRootState();
-        if (rootState) {
-          const mainState = rootState.routes.find((r: any) => r.name === 'Main');
-          if (mainState) {
-            // We're in Main navigator, navigate to TrialExpired screen
-            navigationRef.navigate('TrialExpired' as any);
-          } else {
-            // Navigate to Main first, then TrialExpired
-            navigationRef.navigate('Main' as any, {
-              screen: 'TrialExpired',
-            });
-          }
-        } else {
-          // Fallback: try direct navigation
-          navigationRef.navigate('Main' as any, {
-            screen: 'TrialExpired',
-          });
-        }
+        navigationRef.navigate('Main' as any, { screen: 'SubscriptionPlans' });
       } catch (navError) {
-        console.error('Error navigating to TrialExpired screen:', navError);
+        console.error('Error navigating to SubscriptionPlans screen:', navError);
         // Fallback to alert if navigation fails
-        const featureText = featureName ? ` to use ${featureName}` : '';
         Alert.alert(
-          'Subscribe to Use',
-          `Your 7-day free trial has ended. Please subscribe${featureText}.`,
+          'Subscription Required',
+          'Please subscribe to continue using the app.',
           [
             { text: 'Cancel', style: 'cancel' },
             {
@@ -90,10 +52,9 @@ export async function checkSubscriptionAccess(featureName?: string): Promise<boo
       }
     } else {
       // Navigation not ready, show alert as fallback
-      const featureText = featureName ? ` to use ${featureName}` : '';
       Alert.alert(
-        'Subscribe to Use',
-        `Your 7-day free trial has ended. Please subscribe${featureText}.`,
+        'Subscription Required',
+        'Please subscribe to continue using the app.',
         [
           { text: 'Cancel', style: 'cancel' },
           {
@@ -112,6 +73,18 @@ export async function checkSubscriptionAccess(featureName?: string): Promise<boo
     console.warn('Error checking subscription access — allowing access (graceful degradation):', error);
     return true;
   }
+}
+
+function hasActiveSubscription(subscriptions: UserSubscription[] | null | undefined): boolean {
+  if (!subscriptions?.length) return false;
+
+  const latestSub = subscriptions.find((s) => s.isLatest) || subscriptions[0];
+  if (!latestSub) return false;
+
+  return (
+    latestSub.status === SubscriptionStatus.ACTIVE &&
+    new Date(latestSub.currentPeriodEnd) > new Date()
+  );
 }
 
 /**

@@ -1,24 +1,78 @@
 /**
  * Check-In Hook
- * 
- * Comprehensive hook for managing scheduled check-ins.
- * Based on old app's useDatabaseCheckIn but adapted for new architecture.
+ *
+ * Backend-integrated hook for scheduled check-ins.
+ * This version uses /v1/schedule-checkin routes and avoids Supabase access.
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { Platform, AppState } from 'react-native';
-import { Alert } from 'react-native';
-import { CheckInTime, CheckInFrequency } from '@/types/checkin';
-import { CheckInService } from '@/features/checkins/checkin.service';
-import { CheckIn } from '@/features/checkins/checkin.types';
-import { verifyEmergencyPasskey } from '@/features/emergency/emergency.passkey';
-import { formatFullDateLabel, parseFullDateLabel } from '@/utils/dateFormat';
-import { calculateNextRecurrence } from '@/utils/recurring';
-import { dedupe, getSessionUser } from '@/core/net/supabaseQuery';
-import { QueryCache } from '@/core/net/queryCache';
+import { AppState, Alert } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { CheckInTime, CheckInFrequency as UiCheckInFrequency } from '@/types/checkin';
+import { parseFullDateLabel } from '@/utils/dateFormat';
 import { useAuth } from '@/core/auth';
+import { getApiSession } from '@/session/session';
+import {
+  chatSocketService,
+  NotificationEnvelope,
+  SocketConnectionState,
+} from '@/realtime/core';
+import {
+  cancelScheduleCheckIn,
+  createScheduleCheckIn,
+  getMyScheduleCheckIns,
+  getScheduleCheckInJobs,
+  processDueCheckins,
+  timeoutCheckinJob,
+  updateCheckinJobStatus,
+  type CheckinFrequency,
+  type CheckinStatus,
+  type ScheduleCheckInDto,
+} from '@/api/schedule-checking';
 
-// Helper to format date as "Friday, July 18, 2025"
+const DEFAULT_DUE_WINDOW_MS = 5 * 60 * 1000;
+const SAFETY_POLL_MS = 3_000;
+const PENDING_HINTS_STORAGE_KEY = 'deephorizon.checkins.pendingHints.v1';
+const CHECKIN_SOCKET_EVENT_NAME = 'schedule_checkin';
+
+type CheckInRefreshListener = () => void;
+const checkInRefreshListeners = new Set<CheckInRefreshListener>();
+
+const emitCheckInRefresh = () => {
+  for (const listener of checkInRefreshListeners) {
+    try {
+      listener();
+    } catch {
+      // Best-effort listener execution
+    }
+  }
+};
+
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  return !!value && typeof value === 'object';
+};
+
+const getSocketEventName = (envelope: NotificationEnvelope): string | null => {
+  if (typeof envelope?.event === 'string' && envelope.event !== 'notification') {
+    return envelope.event;
+  }
+
+  if (isObject(envelope?.data) && typeof envelope.data.event === 'string') {
+    return envelope.data.event;
+  }
+
+  return null;
+};
+
+const isCheckInSocketEvent = (envelope: NotificationEnvelope): boolean => {
+  const eventName = getSocketEventName(envelope)?.trim().toLowerCase();
+  if (!eventName) {
+    return false;
+  }
+
+  return eventName === CHECKIN_SOCKET_EVENT_NAME;
+};
+
 const formatDateString = (date: Date): string => {
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
   const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
@@ -29,7 +83,6 @@ const formatDateString = (date: Date): string => {
   return `${dayName}, ${month} ${day}, ${year}`;
 };
 
-// Parse date/time to ISO string
 const parseDateTime = (time: CheckInTime, date: string): Date | null => {
   try {
     if (!date || !time) {
@@ -55,118 +108,326 @@ const parseDateTime = (time: CheckInTime, date: string): Date | null => {
   }
 };
 
-// Format time display
 const formatTime = (time: CheckInTime): string => {
   const hours = time.hours === 0 ? 12 : time.hours > 12 ? time.hours - 12 : time.hours;
   const minutes = time.minutes.toString().padStart(2, '0');
   return `${hours}:${minutes} ${time.period}`;
 };
 
+const toApiFrequency = (frequency: UiCheckInFrequency): CheckinFrequency => {
+  switch (frequency) {
+    case 'Daily':
+      return 'DAILY';
+    case 'Weekly':
+      return 'WEEKLY';
+    case 'One-time':
+    default:
+      return 'ONE_TIME';
+  }
+};
+
+const toUiFrequency = (frequency: CheckinFrequency): UiCheckInFrequency => {
+  switch (frequency) {
+    case 'DAILY':
+      return 'Daily';
+    case 'WEEKLY':
+      return 'Weekly';
+    case 'ONE_TIME':
+    default:
+      return 'One-time';
+  }
+};
+
+interface ScheduledCheckInItem {
+  id: string;
+  startAt: string;
+  notes?: string;
+  frequency: UiCheckInFrequency;
+  status: CheckinStatus;
+  gracePeriodMinutes?: number | null;
+}
+
+interface ActiveCheckInJob {
+  id: string;
+  checkinId: string;
+  scheduledAt: string;
+  attempts: number;
+}
+
+interface PendingScheduleHint {
+  startAt: string;
+  createdAtMs: number;
+}
+
 export interface UseCheckInReturn {
-  // Form state
   checkInTime: CheckInTime;
   setCheckInTime: (time: CheckInTime) => void;
   checkInDate: string;
   setCheckInDate: (date: string) => void;
-  checkInFrequency: CheckInFrequency;
-  setCheckInFrequency: (frequency: CheckInFrequency) => void;
+  checkInFrequency: UiCheckInFrequency;
+  setCheckInFrequency: (frequency: UiCheckInFrequency) => void;
   checkInNotes: string;
   setCheckInNotes: (notes: string) => void;
 
-  // Check-in management
-  scheduledCheckIns: CheckIn[];
+  scheduledCheckIns: ScheduledCheckInItem[];
+  isLoadingCheckIns: boolean;
   isScheduling: boolean;
   scheduleCheckIn: () => Promise<boolean>;
   cancelCheckIn: (id: string) => Promise<boolean>;
   loadCheckIns: () => Promise<void>;
 
-  // Passkey modal state
   showPasskeyModal: boolean;
   setShowPasskeyModal: (show: boolean) => void;
   enteredPasskey: string;
   setEnteredPasskey: (passkey: string) => void;
   isPasskeyProcessing: boolean;
-  activeCheckIn: CheckIn | null;
+  activeCheckIn: ActiveCheckInJob | null;
   passkeyCountdown: number;
 
-  // Functions
   handlePasskeySubmit: () => Promise<void>;
-  validatePasskey: (input: string) => Promise<boolean>;
 }
 
-export function useCheckIn(): UseCheckInReturn {
+export interface UseCheckInOptions {
+  enableDueWatcher?: boolean;
+}
+
+export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
+  const { enableDueWatcher = true } = options;
   const { isAuthReady } = useAuth();
 
-  // Form state
   const [checkInTime, setCheckInTime] = useState<CheckInTime>({
     hours: 12,
     minutes: 0,
-    period: 'PM'
+    period: 'PM',
   });
   const [checkInDate, setCheckInDate] = useState<string>(() => formatDateString(new Date()));
-  const [checkInFrequency, setCheckInFrequency] = useState<CheckInFrequency>('One-time');
+  const [checkInFrequency, setCheckInFrequency] = useState<UiCheckInFrequency>('One-time');
   const [checkInNotes, setCheckInNotes] = useState<string>('');
 
-  // Check-in management
-  const [scheduledCheckIns, setScheduledCheckIns] = useState<CheckIn[]>([]);
+  const [scheduledCheckIns, setScheduledCheckIns] = useState<ScheduledCheckInItem[]>([]);
+  const [scheduledJobs, setScheduledJobs] = useState<ActiveCheckInJob[]>([]);
+  const [isLoadingCheckIns, setIsLoadingCheckIns] = useState(false);
   const [isScheduling, setIsScheduling] = useState(false);
 
-  // Passkey modal state
   const [showPasskeyModal, setShowPasskeyModal] = useState(false);
   const [enteredPasskey, setEnteredPasskey] = useState('');
   const [isPasskeyProcessing, setIsPasskeyProcessing] = useState(false);
-  const [activeCheckIn, setActiveCheckIn] = useState<CheckIn | null>(null);
+  const [activeCheckIn, setActiveCheckIn] = useState<ActiveCheckInJob | null>(null);
   const [passkeyCountdown, setPasskeyCountdown] = useState(30);
 
   const mountedRef = useRef(true);
-  const passkeyTimerRef = useRef<NodeJS.Timeout | null>(null);
-  // Ref so the 30s interval reads latest check-ins without restarting the effect
-  const scheduledCheckInsRef = useRef(scheduledCheckIns);
+  const passkeyTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const loadCheckInsRef = useRef<() => Promise<void>>(async () => {});
+  const scheduledCheckInsRef = useRef<ScheduledCheckInItem[]>([]);
   scheduledCheckInsRef.current = scheduledCheckIns;
-  // Guard: only run the initial due-check once after first load
-  const hasCheckedAfterLoadRef = useRef(false);
-  // Dedup: track check-in IDs that have already had the passkey modal shown
-  // Prevents re-triggering for the same check-in (e.g. completed via CheckInScreen,
-  // but stale cache still shows 'pending' when modal reopens)
-  const presentedCheckInIdsRef = useRef<Set<string>>(new Set());
+  const scheduledJobsRef = useRef<ActiveCheckInJob[]>([]);
+  scheduledJobsRef.current = scheduledJobs;
+  const pendingHintsRef = useRef<PendingScheduleHint[]>([]);
+  const isLoadingCheckInsRef = useRef(false);
+
+  const presentedJobIdsRef = useRef<Set<string>>(new Set());
   const showPasskeyModalRef = useRef(showPasskeyModal);
   showPasskeyModalRef.current = showPasskeyModal;
 
-  // Load check-ins from database
-  const loadCheckIns = useCallback(async () => {
-    return dedupe('checkins.load.pending', async () => {
-      try {
-        const user = await getSessionUser();
-        if (!user) {
-          setScheduledCheckIns([]);
-          return;
-        }
-
-        const cacheKey = `deephorizon.cache.checkins.pending.v1.${user.id}`;
-        const cached = await QueryCache.get<CheckIn[]>(cacheKey, 2 * 60_000);
-        if (Array.isArray(cached) && cached.length > 0) {
-          setScheduledCheckIns(cached);
-        }
-
-        const checkIns = await CheckInService.getAllCheckIns('pending');
-        setScheduledCheckIns(checkIns);
-        void QueryCache.set(cacheKey, checkIns).catch(() => {});
-
-        // Clean up presented IDs for check-ins no longer pending (completed/missed/cancelled).
-        // This allows a truly new pending check-in with the same slot to trigger correctly.
-        const pendingIds = new Set(checkIns.map((c) => c.id));
-        presentedCheckInIdsRef.current.forEach((id) => {
-          if (!pendingIds.has(id)) presentedCheckInIdsRef.current.delete(id);
-        });
-      } catch (error) {
-        console.error('[useCheckIn] Error loading check-ins:', error);
-        // Keep any cached list if present; otherwise empty.
-        setScheduledCheckIns((prev) => (Array.isArray(prev) ? prev : []));
-      }
-    });
+  const savePendingHints = useCallback(async (hints: PendingScheduleHint[]) => {
+    try {
+      await AsyncStorage.setItem(PENDING_HINTS_STORAGE_KEY, JSON.stringify(hints));
+    } catch {
+      // Best-effort
+    }
   }, []);
 
-  // Load check-ins once auth is ready (avoids querying with expired token during boot/resume)
+  const addPendingHint = useCallback(async (startAt: string) => {
+    const now = Date.now();
+    const nextHints = [
+      ...pendingHintsRef.current.filter((h) => now - h.createdAtMs < 12 * 60 * 60 * 1000),
+      { startAt, createdAtMs: now },
+    ];
+    pendingHintsRef.current = nextHints;
+    await savePendingHints(nextHints);
+  }, [savePendingHints]);
+
+  const prunePendingHints = useCallback(async () => {
+    const now = Date.now();
+    const pruned = pendingHintsRef.current.filter((h) => now - h.createdAtMs < 12 * 60 * 60 * 1000);
+    if (pruned.length !== pendingHintsRef.current.length) {
+      pendingHintsRef.current = pruned;
+      await savePendingHints(pruned);
+    }
+  }, [savePendingHints]);
+
+  const checkForDueJobs = useCallback(() => {
+    if (!enableDueWatcher) return;
+    if (AppState.currentState !== 'active') return;
+    if (showPasskeyModalRef.current) return;
+
+    const now = Date.now();
+    for (const job of scheduledJobsRef.current) {
+      if (presentedJobIdsRef.current.has(job.id)) continue;
+
+      const scheduledAt = new Date(job.scheduledAt).getTime();
+      const timeDiff = now - scheduledAt;
+      // Backend is source of truth: if a job is still SCHEDULED and its time has
+      // passed, we should prompt immediately (even after app relaunch).
+      if (timeDiff >= 0) {
+        console.log('[useCheckIn] Due check-in job detected:', job.id);
+        presentedJobIdsRef.current.add(job.id);
+        setActiveCheckIn(job);
+        setEnteredPasskey('');
+        setShowPasskeyModal(true);
+        break;
+      }
+    }
+
+    const hasActiveSchedules = scheduledCheckInsRef.current.length > 0;
+
+    const hasDueScheduleWithoutJobs =
+      hasActiveSchedules &&
+      scheduledJobsRef.current.length === 0 &&
+      scheduledCheckInsRef.current.some((schedule) => {
+        const scheduleTime = new Date(schedule.startAt).getTime();
+        const timeDiff = now - scheduleTime;
+        const dueWindowMs =
+          typeof schedule.gracePeriodMinutes === 'number' && schedule.gracePeriodMinutes > 0
+            ? schedule.gracePeriodMinutes * 60 * 1000
+            : DEFAULT_DUE_WINDOW_MS;
+        return timeDiff >= 0 && timeDiff < dueWindowMs;
+      });
+
+    const hasDuePendingHintWithoutJobs =
+      hasActiveSchedules &&
+      scheduledJobsRef.current.length === 0 &&
+      pendingHintsRef.current.some((hint) => {
+        const scheduleTime = new Date(hint.startAt).getTime();
+        const timeDiff = now - scheduleTime;
+        return timeDiff >= 0 && timeDiff < DEFAULT_DUE_WINDOW_MS;
+      });
+
+    if ((hasDueScheduleWithoutJobs || hasDuePendingHintWithoutJobs) && !isLoadingCheckInsRef.current) {
+      console.warn('[useCheckIn] Due schedule hint found but no SCHEDULED jobs returned. Refreshing from backend.');
+      void loadCheckInsRef.current().catch(console.error);
+    }
+  }, [enableDueWatcher]);
+
+  const resolveScheduleDisplayAt = useCallback(
+    (schedule: ScheduleCheckInDto, earliestScheduledJobAt?: string): string => {
+      const snakeCaseNextRunAt =
+        (schedule as ScheduleCheckInDto & { next_run_at?: string | null }).next_run_at ?? null;
+      return earliestScheduledJobAt ?? schedule.nextRunAt ?? snakeCaseNextRunAt ?? schedule.startAt;
+    },
+    [],
+  );
+
+  const loadCheckIns = useCallback(async () => {
+    if (isLoadingCheckInsRef.current) return;
+    isLoadingCheckInsRef.current = true;
+    setIsLoadingCheckIns(true);
+    try {
+      // Best-effort manual trigger so jobs become executable promptly.
+      await processDueCheckins({ limit: 100 }).catch((err) => {
+        console.warn('[useCheckIn] processDueCheckins failed (non-fatal):', err);
+      });
+
+      const schedules = await getMyScheduleCheckIns('ACTIVE');
+
+      console.log('[useCheckIn] Loaded schedules:', schedules);
+
+      if (schedules.length === 0 && pendingHintsRef.current.length > 0) {
+        pendingHintsRef.current = [];
+        await savePendingHints([]);
+      }
+
+      const jobsLists = await Promise.all(
+        schedules.map(async (schedule) => {
+          const jobs = await getScheduleCheckInJobs(schedule.id).catch((err) => {
+            console.warn(`[useCheckIn] Failed to load jobs for schedule ${schedule.id}:`, err);
+            return [];
+          });
+          return jobs
+            .filter((job) => job.status === 'SCHEDULED')
+            .map((job) => ({
+              id: job.id,
+              checkinId: schedule.id,
+              scheduledAt: job.scheduledAt,
+              attempts: job.attempts,
+            }));
+        }),
+      );
+
+      const allScheduledJobs = jobsLists
+        .flat()
+        .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+
+      const earliestScheduledJobByCheckinId = new Map<string, string>();
+      for (const job of allScheduledJobs) {
+        if (!earliestScheduledJobByCheckinId.has(job.checkinId)) {
+          earliestScheduledJobByCheckinId.set(job.checkinId, job.scheduledAt);
+        }
+      }
+
+      const mappedSchedules: ScheduledCheckInItem[] = schedules
+        .map((schedule) => ({
+          id: schedule.id,
+          startAt: resolveScheduleDisplayAt(
+            schedule,
+            earliestScheduledJobByCheckinId.get(schedule.id),
+          ),
+          notes: schedule.remarks ?? undefined,
+          frequency: toUiFrequency(schedule.frequency),
+          status: schedule.status,
+          gracePeriodMinutes: schedule.gracePeriodMinutes,
+        }))
+        .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+      setScheduledCheckIns(mappedSchedules);
+
+      // Keep ref in sync immediately so due check can run right away without waiting
+      // for next render/interval tick.
+      scheduledJobsRef.current = allScheduledJobs;
+      setScheduledJobs(allScheduledJobs);
+
+      const pendingJobIds = new Set(allScheduledJobs.map((job) => job.id));
+      presentedJobIdsRef.current.forEach((jobId) => {
+        if (!pendingJobIds.has(jobId)) {
+          presentedJobIdsRef.current.delete(jobId);
+        }
+      });
+
+      await prunePendingHints();
+
+      // Evaluate due jobs immediately after load to avoid 30s delay.
+      checkForDueJobs();
+    } catch (error) {
+      console.error('[useCheckIn] Error loading schedule check-ins:', error);
+      setScheduledCheckIns((prev) => (Array.isArray(prev) ? prev : []));
+      setScheduledJobs((prev) => (Array.isArray(prev) ? prev : []));
+    } finally {
+      setIsLoadingCheckIns(false);
+      isLoadingCheckInsRef.current = false;
+    }
+  }, [checkForDueJobs, prunePendingHints, resolveScheduleDisplayAt]);
+  loadCheckInsRef.current = loadCheckIns;
+
+  useEffect(() => {
+    let isMounted = true;
+    const loadHints = async () => {
+      try {
+        const raw = await AsyncStorage.getItem(PENDING_HINTS_STORAGE_KEY);
+        if (!raw || !isMounted) return;
+        const parsed = JSON.parse(raw) as PendingScheduleHint[];
+        if (Array.isArray(parsed)) {
+          pendingHintsRef.current = parsed;
+          await prunePendingHints();
+        }
+      } catch {
+        // Ignore invalid storage contents
+      }
+    };
+    void loadHints();
+    return () => {
+      isMounted = false;
+    };
+  }, [prunePendingHints]);
+
   useEffect(() => {
     if (!isAuthReady) return;
     loadCheckIns();
@@ -175,100 +436,149 @@ export function useCheckIn(): UseCheckInReturn {
     };
   }, [isAuthReady, loadCheckIns]);
 
-  // Periodically reload check-ins every 60 seconds to catch newly scheduled ones
   useEffect(() => {
-    if (!isAuthReady) return;
+    const handleRefresh = () => {
+      if (!mountedRef.current || !isAuthReady) return;
+      void loadCheckIns().catch(console.error);
+    };
 
-    const reloadInterval = setInterval(() => {
-      if (mountedRef.current && AppState.currentState === 'active') {
-        console.log('[useCheckIn] Reloading check-ins...');
-        loadCheckIns().catch(console.error);
-      }
-    }, 60000); // Reload every 60 seconds
-
-    return () => clearInterval(reloadInterval);
+    checkInRefreshListeners.add(handleRefresh);
+    return () => {
+      checkInRefreshListeners.delete(handleRefresh);
+    };
   }, [isAuthReady, loadCheckIns]);
 
-  // ✅ FIX: Detect due check-ins immediately after first load.
-  //
-  // On cold start, the periodic 30s interval (below) runs before loadCheckIns()
-  // completes, so scheduledCheckInsRef is empty and it finds nothing. This effect
-  // watches for the first non-empty load and checks for due check-ins immediately.
-  // Without this, the user waits up to 30s for the passkey modal to appear.
   useEffect(() => {
-    if (scheduledCheckIns.length === 0 || hasCheckedAfterLoadRef.current) return;
-    hasCheckedAfterLoadRef.current = true;
+    if (!enableDueWatcher) return;
+    if (!isAuthReady) return;
 
-    if (AppState.currentState !== 'active') return;
-    if (showPasskeyModalRef.current) return; // Already showing passkey
+    const socketBaseUrl = (
+      process.env.EXPO_PUBLIC_WEBSOCKET_URL ||
+      process.env.EXPO_PUBLIC_BACKEND_URL ||
+      ''
+    ).replace(/\/$/, '');
 
-    const now = Date.now();
-    for (const checkIn of scheduledCheckIns) {
-      if (checkIn.status !== 'pending') continue;
-      if (presentedCheckInIdsRef.current.has(checkIn.id)) continue;
-      const scheduledAt = new Date(checkIn.scheduled_at).getTime();
-      const timeDiff = now - scheduledAt;
-      if (timeDiff >= 0 && timeDiff < 5 * 60 * 1000) {
-        console.log(`[useCheckIn] Due check-in detected after load: ${checkIn.id}`);
-        presentedCheckInIdsRef.current.add(checkIn.id);
-        setActiveCheckIn(checkIn);
-        setShowPasskeyModal(true);
-        setEnteredPasskey('');
-        break; // Only handle first due check-in
-      }
+    if (!socketBaseUrl) {
+      console.warn('[useCheckIn] Missing socket URL for realtime refresh.');
+      return;
     }
-  }, [scheduledCheckIns]);
 
-  // Check for due check-ins (foreground only - server sends push notifications)
-  // Uses scheduledCheckInsRef so the interval doesn't restart on every array change
-  useEffect(() => {
-    if (!mountedRef.current) return;
+    //console.log('[useCheckIn] Realtime watcher enabled. Preparing socket connection for check-ins.');
 
-    const checkForDueCheckIns = () => {
-      // Only check when app is in foreground
-      if (AppState.currentState !== 'active') return;
-      // Don't trigger if passkey modal is already showing
-      if (showPasskeyModalRef.current) return;
-
-      const now = Date.now();
-      for (const checkIn of scheduledCheckInsRef.current) {
-        if (checkIn.status !== 'pending') continue;
-        // Skip check-ins already presented (completed via CheckInScreen but stale in cache)
-        if (presentedCheckInIdsRef.current.has(checkIn.id)) continue;
-
-        const scheduledAt = new Date(checkIn.scheduled_at).getTime();
-        const timeDiff = now - scheduledAt;
-
-        // If check-in is due (within last 5 minutes to allow for delays)
-        if (timeDiff >= 0 && timeDiff < 5 * 60 * 1000) {
-          console.log(`[useCheckIn] Check-in due: ${checkIn.id}`);
-          presentedCheckInIdsRef.current.add(checkIn.id);
-          setActiveCheckIn(checkIn);
-          setShowPasskeyModal(true);
-          setEnteredPasskey('');
-          break; // Only handle one at a time
+    const ensureSocketConnection = async () => {
+      try {
+        const { token } = await getApiSession();
+        if (!token) {
+          console.warn('[useCheckIn] No API token available. Skipping socket connection.');
+          return;
         }
+        //console.log('[useCheckIn] Connecting check-in socket:', socketBaseUrl);
+        chatSocketService.connect(socketBaseUrl, token);
+      } catch (error) {
+        console.warn('[useCheckIn] Failed to ensure socket connection:', error);
       }
     };
 
-    // Check immediately
-    checkForDueCheckIns();
+    void ensureSocketConnection();
 
-    // Check periodically (every 30 seconds) when in foreground
+    const notificationHandler = (envelope: NotificationEnvelope) => {
+      if (!mountedRef.current || AppState.currentState !== 'active') {
+        return;
+      }
+
+      const eventName = getSocketEventName(envelope);
+      //console.log('[useCheckIn] Socket notification received:', eventName ?? 'unknown_event');
+
+      if (!isCheckInSocketEvent(envelope)) {
+        //console.log('[useCheckIn] Ignored socket notification (not schedule_checkin).');
+        return;
+      }
+
+      //console.log('[useCheckIn] schedule_checkin event received. Refreshing check-in data.');
+
+      void loadCheckIns().then(() => {
+        //console.log('[useCheckIn] Check-in data refreshed after schedule_checkin event.');
+        emitCheckInRefresh();
+      }).catch(console.error);
+    };
+
+    const connectionStateHandler = (state: SocketConnectionState) => {
+      //console.log('[useCheckIn] Socket connection state changed:', state);
+      if (!mountedRef.current || state !== SocketConnectionState.CONNECTED) {
+        return;
+      }
+
+      //console.log('[useCheckIn] Socket connected. Triggering check-in sync.');
+      void loadCheckIns().catch(console.error);
+    };
+
+    //console.log('[useCheckIn] Registering socket listeners for check-in events.');
+    chatSocketService.onNotification(notificationHandler);
+    chatSocketService.onConnectionStateChange(connectionStateHandler);
+
+    return () => {
+      //console.log('[useCheckIn] Removing socket listeners for check-in events.');
+      chatSocketService.offNotification(notificationHandler);
+      chatSocketService.offConnectionStateChange(connectionStateHandler);
+    };
+  }, [enableDueWatcher, isAuthReady, loadCheckIns]);
+
+  useEffect(() => {
+    if (!enableDueWatcher) return;
+    if (!mountedRef.current) return;
+
+    checkForDueJobs();
+
+    let nextDueTimer: ReturnType<typeof setTimeout> | null = null;
+    const unsurfacedJobs = scheduledJobs.filter((job) => !presentedJobIdsRef.current.has(job.id));
+    if (unsurfacedJobs.length > 0) {
+      const now = Date.now();
+      const nextScheduledAt = unsurfacedJobs
+        .map((job) => new Date(job.scheduledAt).getTime())
+        .filter((ts) => !Number.isNaN(ts))
+        .sort((a, b) => a - b)[0];
+
+      if (typeof nextScheduledAt === 'number') {
+        const delayMs = Math.max(150, nextScheduledAt - now + 150);
+        nextDueTimer = setTimeout(() => {
+          if (!mountedRef.current) return;
+          checkForDueJobs();
+        }, delayMs);
+      }
+    }
+
     const interval = setInterval(() => {
       if (!mountedRef.current) return;
-      if (AppState.currentState === 'active') {
-        checkForDueCheckIns();
-      }
-    }, 30000);
+      checkForDueJobs();
+    }, SAFETY_POLL_MS);
 
-    return () => clearInterval(interval);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps -- reads from scheduledCheckInsRef
+    return () => {
+      clearInterval(interval);
+      if (nextDueTimer) clearTimeout(nextDueTimer);
+    };
+  }, [enableDueWatcher, checkForDueJobs, scheduledJobs]);
 
-  // Passkey countdown timer - counts down 30 seconds when modal is open
+  useEffect(() => {
+    if (!enableDueWatcher) return;
+    if (!isAuthReady) return;
+
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (!mountedRef.current) return;
+      if (nextState !== 'active') return;
+
+      // Instant check with current in-memory jobs, then refresh and re-check.
+      checkForDueJobs();
+      void loadCheckIns().then(() => {
+        if (!mountedRef.current) return;
+        checkForDueJobs();
+      }).catch(console.error);
+    });
+
+    return () => subscription.remove();
+  }, [enableDueWatcher, isAuthReady, loadCheckIns, checkForDueJobs]);
+
   useEffect(() => {
     if (!showPasskeyModal) {
-      // Reset countdown when modal closes
       setPasskeyCountdown(30);
       if (passkeyTimerRef.current) {
         clearInterval(passkeyTimerRef.current);
@@ -277,23 +587,34 @@ export function useCheckIn(): UseCheckInReturn {
       return;
     }
 
-    // Start countdown when modal opens
     setPasskeyCountdown(30);
-    
+
     passkeyTimerRef.current = setInterval(() => {
       if (!mountedRef.current) return;
 
       setPasskeyCountdown((prev) => {
         if (prev <= 1) {
-          // Timeout - mark check-in as missed and close modal
           if (activeCheckIn) {
-            CheckInService.markMissed(activeCheckIn.id).catch(console.error);
+            // Timer expiry should mark current job timed out and backend reschedules next run.
+            void (async () => {
+              try {
+                await timeoutCheckinJob(activeCheckIn.id, { source: 'passkey_modal_expired' });
+              } catch (error) {
+                console.error('[useCheckIn] Failed to timeout check-in job:', error);
+              } finally {
+                await loadCheckIns();
+                emitCheckInRefresh();
+              }
+            })();
           }
+
           setShowPasskeyModal(false);
           setActiveCheckIn(null);
-          Alert.alert('Time Expired', 'The passkey entry time has expired. Please schedule another check-in.');
+          setEnteredPasskey('');
+          Alert.alert('Time Expired', 'The passkey entry time has expired. Your next security check has been rescheduled.');
           return 30;
         }
+
         return prev - 1;
       });
     }, 1000);
@@ -304,75 +625,67 @@ export function useCheckIn(): UseCheckInReturn {
         passkeyTimerRef.current = null;
       }
     };
-  }, [showPasskeyModal, activeCheckIn]);
+  }, [showPasskeyModal, activeCheckIn, loadCheckIns]);
 
-  // Schedule check-in
   const scheduleCheckIn = useCallback(async (): Promise<boolean> => {
     if (isScheduling) return false;
 
     setIsScheduling(true);
 
     try {
-      // Parse the scheduled time
       const scheduledTime = parseDateTime(checkInTime, checkInDate);
       if (!scheduledTime) {
         Alert.alert('Invalid Date/Time', 'Please select a valid date and time for your check-in.');
         return false;
       }
 
-      // Validate scheduled time is in the future
       if (scheduledTime <= new Date()) {
         Alert.alert('Invalid Time', 'Scheduled time must be in the future.');
         return false;
       }
 
-      // Note: Frequency is not stored in the database.
-      // For recurring check-ins, we'll need to handle them differently.
-      // For now, we'll just schedule the check-in and handle recurring logic separately.
-      const result = await CheckInService.schedule({
-        scheduled_at: scheduledTime.toISOString(),
-        message: checkInNotes || 'Security check-in',
+      const createdSchedule = await createScheduleCheckIn({
+        startAt: scheduledTime.toISOString(),
+        frequency: toApiFrequency(checkInFrequency),
+        remarks: checkInNotes || undefined,
       });
 
-      if (!result.success) {
-        Alert.alert('Scheduling Failed', result.error || 'Unable to schedule check-in. Please try again.');
-        return false;
-      }
+      await addPendingHint(createdSchedule.startAt);
 
-      // Reload check-ins
       await loadCheckIns();
+      emitCheckInRefresh();
 
       Alert.alert(
         'Check-in Scheduled',
         `Your ${checkInFrequency.toLowerCase()} security check-in has been scheduled for ${formatTime(checkInTime)} on ${checkInDate}.`,
-        [{ text: 'OK' }]
+        [{ text: 'OK' }],
       );
 
-      // Reset form
       setCheckInNotes('');
-
       return true;
     } catch (error: any) {
       console.error('[useCheckIn] Failed to schedule check-in:', error);
-      Alert.alert('Scheduling Failed', error.message || 'Unable to schedule check-in. Please try again.');
+      Alert.alert('Scheduling Failed', error?.message || 'Unable to schedule check-in. Please try again.');
       return false;
     } finally {
       setIsScheduling(false);
     }
-  }, [checkInTime, checkInDate, checkInFrequency, checkInNotes, loadCheckIns]);
+  }, [isScheduling, checkInTime, checkInDate, checkInFrequency, checkInNotes, addPendingHint, loadCheckIns]);
 
-  // Cancel check-in
   const cancelCheckIn = useCallback(async (id: string): Promise<boolean> => {
     try {
-      const success = await CheckInService.cancel(id);
+      const cancelled = await cancelScheduleCheckIn(id);
+      const success = cancelled.status === 'CANCELLED';
+
       if (success) {
         await loadCheckIns();
+        emitCheckInRefresh();
         Alert.alert('Check-in Cancelled', 'The security check-in has been cancelled.');
         return true;
-      } else {
-        Alert.alert('Error', 'Failed to cancel check-in. Please try again.');
-        return false;
       }
+
+      Alert.alert('Error', 'Failed to cancel check-in. Please try again.');
+      return false;
     } catch (error) {
       console.error('[useCheckIn] Failed to cancel check-in:', error);
       Alert.alert('Error', 'Failed to cancel check-in. Please try again.');
@@ -380,105 +693,61 @@ export function useCheckIn(): UseCheckInReturn {
     }
   }, [loadCheckIns]);
 
-  // Validate passkey
-  const validatePasskey = useCallback(async (input: string): Promise<boolean> => {
-    try {
-      return await verifyEmergencyPasskey(input);
-    } catch (error) {
-      console.error('[useCheckIn] Error validating passkey:', error);
-      return false;
-    }
-  }, []);
-
-  // Handle passkey submit
   const handlePasskeySubmit = useCallback(async (): Promise<void> => {
     if (isPasskeyProcessing || !activeCheckIn) {
       return;
     }
 
-    // Capture locally to prevent null crash if state changes during async ops
-    const checkIn = activeCheckIn;
-
+    const job = activeCheckIn;
     setIsPasskeyProcessing(true);
 
     try {
-      const isValid = await validatePasskey(enteredPasskey);
+      const result = await updateCheckinJobStatus(job.id, {
+        passcode: enteredPasskey,
+      });
 
       if (!mountedRef.current) return;
 
-      if (!isValid) {
-        // Get current check-in to check attempts
-        const currentCheckIn = await CheckInService.getCheckIn(checkIn.id);
-        if (currentCheckIn) {
-          const attempts = (currentCheckIn.passkey_attempts || 0) + 1;
-          
-          // Update check-in with failed attempt (via API if available, otherwise just reload)
-          await loadCheckIns();
-          
-          if (attempts >= 3) {
-            // Max attempts reached - mark as missed
-            Alert.alert(
-              'Security Alert',
-              'Maximum passkey attempts reached. Emergency protocol will be activated.',
-              [{ text: 'OK' }]
-            );
-            
-            setShowPasskeyModal(false);
-            setEnteredPasskey('');
-            setActiveCheckIn(null);
-            await loadCheckIns();
-            return;
-          } else {
-            Alert.alert(
-              'Incorrect Passkey',
-              `The passkey you entered is incorrect. ${3 - attempts} attempts remaining.`,
-              [{ text: 'Try Again' }]
-            );
-            setIsPasskeyProcessing(false);
-            return;
-          }
-        } else {
+      if (!result.passcodeMatched) {
+        if (result.status === 'WRONG_PIN' || result.remainingAttempts <= 0) {
           Alert.alert(
-            'Incorrect Passkey',
-            'The passkey you entered is incorrect. Please try again.',
-            [{ text: 'Try Again' }]
+            'Security Alert',
+            'Maximum passkey attempts reached. Emergency protocol will be activated.',
+            [{ text: 'OK' }],
           );
-          setIsPasskeyProcessing(false);
+
+          setShowPasskeyModal(false);
+          setEnteredPasskey('');
+          setActiveCheckIn(null);
+          await loadCheckIns();
+          emitCheckInRefresh();
           return;
         }
+
+        Alert.alert(
+          'Incorrect Passkey',
+          `The passkey you entered is incorrect. ${result.remainingAttempts} attempts remaining.`,
+          [{ text: 'Try Again' }],
+        );
+        return;
       }
 
-      // Passkey is valid - complete the check-in
-      const result = await CheckInService.complete(checkIn.id, true);
+      Alert.alert('Check-in Complete', 'Your security check-in has been completed successfully.');
+      setShowPasskeyModal(false);
+      setEnteredPasskey('');
+      setActiveCheckIn(null);
 
-      if (result.success) {
-        Alert.alert('Check-in Complete', 'Your security check-in has been completed successfully.');
-        
-        setShowPasskeyModal(false);
-        setEnteredPasskey('');
-        const completedCheckIn = activeCheckIn;
-        setActiveCheckIn(null);
-        
-        // Reload check-ins
-        await loadCheckIns();
-
-        // Note: Since the database doesn't store frequency, we can't automatically
-        // schedule the next recurring check-in. For recurring check-ins, users will need
-        // to manually schedule them, or we could implement a separate tracking mechanism.
-        // For now, we'll just complete the check-in and let the user schedule the next one.
-      } else {
-        Alert.alert('Error', result.error || 'Failed to complete check-in. Please try again.');
-      }
-    } catch (error: any) {
-      console.error('[useCheckIn] Error during passkey validation:', error);
+      await loadCheckIns();
+      emitCheckInRefresh();
+    } catch (error) {
+      console.error('[useCheckIn] Error during passkey handling:', error);
       Alert.alert('Validation Error', 'There was an error validating your passkey. Please try again.');
     } finally {
       setIsPasskeyProcessing(false);
     }
-  }, [isPasskeyProcessing, activeCheckIn, enteredPasskey, validatePasskey, loadCheckIns]);
+  }, [isPasskeyProcessing, activeCheckIn, enteredPasskey, loadCheckIns]);
 
   return {
-    // Form state
     checkInTime,
     setCheckInTime,
     checkInDate,
@@ -488,14 +757,13 @@ export function useCheckIn(): UseCheckInReturn {
     checkInNotes,
     setCheckInNotes,
 
-    // Check-in management
     scheduledCheckIns,
+    isLoadingCheckIns,
     isScheduling,
     scheduleCheckIn,
     cancelCheckIn,
     loadCheckIns,
 
-    // Passkey modal state
     showPasskeyModal,
     setShowPasskeyModal,
     enteredPasskey,
@@ -504,9 +772,6 @@ export function useCheckIn(): UseCheckInReturn {
     activeCheckIn,
     passkeyCountdown,
 
-    // Functions
     handlePasskeySubmit,
-    validatePasskey,
   };
 }
-

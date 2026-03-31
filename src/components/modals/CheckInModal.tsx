@@ -14,6 +14,7 @@ import {
   ScrollView,
   TextInput,
   Platform,
+  ActivityIndicator,
 } from 'react-native';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -24,7 +25,7 @@ import { EmergencyPasskeyModal } from './EmergencyPasskeyModal';
 import { styles } from './CheckInModal.styles';
 import { modalStyles } from '../../styles/Modal.styles';
 import { CheckInTime, CheckInFrequency } from '@/types/checkin';
-import { useCheckIn } from '@/hooks/useCheckIn';
+import { useCheckIn } from '../../hooks/useCheckIn';
 import { formatUserFriendlyDate } from '@/utils/timeHelpers';
 import { generateFutureInstances } from '@/utils/recurring';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
@@ -49,7 +50,7 @@ const CheckInModal: React.FC<CheckInModalProps> = ({
   setActiveService,
 }) => {
   const navigation = useNavigation();
-  const checkIn = useCheckIn();
+  const checkIn = useCheckIn({ enableDueWatcher: false });
 
   // Local state for pickers
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -349,20 +350,20 @@ const CheckInModal: React.FC<CheckInModalProps> = ({
           <View style={styles.upcomingSection}>
             <Text style={styles.upcomingSectionTitle}>Upcoming Security Checks</Text>
 
-            {(() => {
-              // Filter to only show future check-ins (exclude past ones that are still pending)
-              const now = Date.now();
-              const upcomingCheckIns = checkIn.scheduledCheckIns.filter(
-                (item) => new Date(item.scheduled_at).getTime() > now
-              );
+            {checkIn.isLoadingCheckIns ? (
+              <View style={styles.noCheckInsContainer}>
+                <ActivityIndicator size="small" color="#2C3E50" />
+                <Text style={[styles.noCheckInsText, { marginTop: 8 }]}>Loading upcoming check-ins...</Text>
+              </View>
+            ) : (
+              (() => {
+              const upcomingCheckIns = checkIn.scheduledCheckIns;
               return upcomingCheckIns.length > 0 ? (
               upcomingCheckIns.map((checkInItem) => {
-                const scheduledDate = new Date(checkInItem.scheduled_at);
+                const scheduledDate = new Date(checkInItem.startAt);
                 const dateString = formatFullDateLabel(scheduledDate);
                 const timeString = scheduledDate.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
-                // Note: Database doesn't store frequency, so we can't display it here
-                // All check-ins are displayed as individual scheduled check-ins
-                const frequency = 'One-time'; // Default since we can't determine from DB
+                const frequency = checkInItem.frequency;
 
                 return (
                   <View key={checkInItem.id} style={styles.upcomingCheckIn}>
@@ -398,7 +399,8 @@ const CheckInModal: React.FC<CheckInModalProps> = ({
                 <Text style={styles.noCheckInsText}>No upcoming security checks</Text>
               </View>
             );
-            })()}
+            })()
+            )}
           </View>
         </ScrollView>
 
@@ -440,7 +442,7 @@ const CheckInModal: React.FC<CheckInModalProps> = ({
             iconColor="#2c3e50"
             isEmergency={false}
             emergencyCountdown={checkIn.passkeyCountdown}
-            emergencyDeadlineMs={checkIn.activeCheckIn ? new Date(checkIn.activeCheckIn.scheduled_at).getTime() + 30 * 1000 : undefined}
+            emergencyDeadlineMs={checkIn.activeCheckIn ? new Date(checkIn.activeCheckIn.scheduledAt).getTime() + 30 * 1000 : undefined}
             enteredPasskey={checkIn.enteredPasskey}
             onPasskeyChange={checkIn.setEnteredPasskey}
             isLoading={checkIn.isPasskeyProcessing}
