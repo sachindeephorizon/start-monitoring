@@ -53,6 +53,10 @@ export interface ProcessDueCheckinsPayload {
   limit?: number;
 }
 
+export interface TimeoutCheckinJobPayload {
+  source: 'passkey_modal_expired';
+}
+
 export interface UpdateCheckinJobStatusResult {
   jobId: string;
   status: CheckinJobStatus;
@@ -67,6 +71,12 @@ export interface ProcessDueCheckinsResult {
   processed: number;
   escalated: number;
   missed: number;
+}
+
+export interface TimeoutCheckinJobResult {
+  jobId: string;
+  status: CheckinJobStatus;
+  scheduleId: string;
 }
 
 export interface CommandResponse<T> {
@@ -111,5 +121,16 @@ export const processDueCheckins = async (
   input?: ProcessDueCheckinsPayload,
 ): Promise<ProcessDueCheckinsResult> => {
   const res = await post('/schedule-checkin/process-due', input ?? {}) as CommandResponse<ProcessDueCheckinsResult>;
+  return res.data;
+};
+
+export const timeoutCheckinJob = async (
+  jobId: string,
+  input: TimeoutCheckinJobPayload,
+): Promise<TimeoutCheckinJobResult> => {
+  const res = await post(
+    `/schedule-checkin/jobs/${encodeURIComponent(jobId)}/timeout`,
+    input,
+  ) as CommandResponse<TimeoutCheckinJobResult>;
   return res.data;
 };

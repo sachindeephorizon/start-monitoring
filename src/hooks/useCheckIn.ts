@@ -11,20 +11,67 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { CheckInTime, CheckInFrequency as UiCheckInFrequency } from '@/types/checkin';
 import { parseFullDateLabel } from '@/utils/dateFormat';
 import { useAuth } from '@/core/auth';
+import { getApiSession } from '@/session/session';
+import {
+  chatSocketService,
+  NotificationEnvelope,
+  SocketConnectionState,
+} from '@/realtime/core';
 import {
   cancelScheduleCheckIn,
   createScheduleCheckIn,
   getMyScheduleCheckIns,
   getScheduleCheckInJobs,
   processDueCheckins,
+  timeoutCheckinJob,
   updateCheckinJobStatus,
   type CheckinFrequency,
   type CheckinStatus,
+  type ScheduleCheckInDto,
 } from '@/api/schedule-checking';
 
 const DEFAULT_DUE_WINDOW_MS = 5 * 60 * 1000;
 const SAFETY_POLL_MS = 3_000;
 const PENDING_HINTS_STORAGE_KEY = 'deephorizon.checkins.pendingHints.v1';
+const CHECKIN_SOCKET_EVENT_NAME = 'schedule_checkin';
+
+type CheckInRefreshListener = () => void;
+const checkInRefreshListeners = new Set<CheckInRefreshListener>();
+
+const emitCheckInRefresh = () => {
+  for (const listener of checkInRefreshListeners) {
+    try {
+      listener();
+    } catch {
+      // Best-effort listener execution
+    }
+  }
+};
+
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  return !!value && typeof value === 'object';
+};
+
+const getSocketEventName = (envelope: NotificationEnvelope): string | null => {
+  if (typeof envelope?.event === 'string' && envelope.event !== 'notification') {
+    return envelope.event;
+  }
+
+  if (isObject(envelope?.data) && typeof envelope.data.event === 'string') {
+    return envelope.data.event;
+  }
+
+  return null;
+};
+
+const isCheckInSocketEvent = (envelope: NotificationEnvelope): boolean => {
+  const eventName = getSocketEventName(envelope)?.trim().toLowerCase();
+  if (!eventName) {
+    return false;
+  }
+
+  return eventName === CHECKIN_SOCKET_EVENT_NAME;
+};
 
 const formatDateString = (date: Date): string => {
   const dayNames = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
@@ -210,6 +257,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
   }, [savePendingHints]);
 
   const checkForDueJobs = useCallback(() => {
+    if (!enableDueWatcher) return;
     if (AppState.currentState !== 'active') return;
     if (showPasskeyModalRef.current) return;
 
@@ -231,7 +279,10 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       }
     }
 
+    const hasActiveSchedules = scheduledCheckInsRef.current.length > 0;
+
     const hasDueScheduleWithoutJobs =
+      hasActiveSchedules &&
       scheduledJobsRef.current.length === 0 &&
       scheduledCheckInsRef.current.some((schedule) => {
         const scheduleTime = new Date(schedule.startAt).getTime();
@@ -244,6 +295,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       });
 
     const hasDuePendingHintWithoutJobs =
+      hasActiveSchedules &&
       scheduledJobsRef.current.length === 0 &&
       pendingHintsRef.current.some((hint) => {
         const scheduleTime = new Date(hint.startAt).getTime();
@@ -255,7 +307,16 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       console.warn('[useCheckIn] Due schedule hint found but no SCHEDULED jobs returned. Refreshing from backend.');
       void loadCheckInsRef.current().catch(console.error);
     }
-  }, []);
+  }, [enableDueWatcher]);
+
+  const resolveScheduleDisplayAt = useCallback(
+    (schedule: ScheduleCheckInDto, earliestScheduledJobAt?: string): string => {
+      const snakeCaseNextRunAt =
+        (schedule as ScheduleCheckInDto & { next_run_at?: string | null }).next_run_at ?? null;
+      return earliestScheduledJobAt ?? schedule.nextRunAt ?? snakeCaseNextRunAt ?? schedule.startAt;
+    },
+    [],
+  );
 
   const loadCheckIns = useCallback(async () => {
     if (isLoadingCheckInsRef.current) return;
@@ -269,15 +330,12 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
 
       const schedules = await getMyScheduleCheckIns('ACTIVE');
 
-      const mappedSchedules: ScheduledCheckInItem[] = schedules.map((schedule) => ({
-        id: schedule.id,
-        startAt: schedule.startAt,
-        notes: schedule.remarks ?? undefined,
-        frequency: toUiFrequency(schedule.frequency),
-        status: schedule.status,
-        gracePeriodMinutes: schedule.gracePeriodMinutes,
-      }));
-      setScheduledCheckIns(mappedSchedules);
+      console.log('[useCheckIn] Loaded schedules:', schedules);
+
+      if (schedules.length === 0 && pendingHintsRef.current.length > 0) {
+        pendingHintsRef.current = [];
+        await savePendingHints([]);
+      }
 
       const jobsLists = await Promise.all(
         schedules.map(async (schedule) => {
@@ -299,6 +357,28 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       const allScheduledJobs = jobsLists
         .flat()
         .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+
+      const earliestScheduledJobByCheckinId = new Map<string, string>();
+      for (const job of allScheduledJobs) {
+        if (!earliestScheduledJobByCheckinId.has(job.checkinId)) {
+          earliestScheduledJobByCheckinId.set(job.checkinId, job.scheduledAt);
+        }
+      }
+
+      const mappedSchedules: ScheduledCheckInItem[] = schedules
+        .map((schedule) => ({
+          id: schedule.id,
+          startAt: resolveScheduleDisplayAt(
+            schedule,
+            earliestScheduledJobByCheckinId.get(schedule.id),
+          ),
+          notes: schedule.remarks ?? undefined,
+          frequency: toUiFrequency(schedule.frequency),
+          status: schedule.status,
+          gracePeriodMinutes: schedule.gracePeriodMinutes,
+        }))
+        .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
+      setScheduledCheckIns(mappedSchedules);
 
       // Keep ref in sync immediately so due check can run right away without waiting
       // for next render/interval tick.
@@ -324,7 +404,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       setIsLoadingCheckIns(false);
       isLoadingCheckInsRef.current = false;
     }
-  }, [checkForDueJobs, prunePendingHints]);
+  }, [checkForDueJobs, prunePendingHints, resolveScheduleDisplayAt]);
   loadCheckInsRef.current = loadCheckIns;
 
   useEffect(() => {
@@ -357,16 +437,91 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
   }, [isAuthReady, loadCheckIns]);
 
   useEffect(() => {
+    const handleRefresh = () => {
+      if (!mountedRef.current || !isAuthReady) return;
+      void loadCheckIns().catch(console.error);
+    };
+
+    checkInRefreshListeners.add(handleRefresh);
+    return () => {
+      checkInRefreshListeners.delete(handleRefresh);
+    };
+  }, [isAuthReady, loadCheckIns]);
+
+  useEffect(() => {
+    if (!enableDueWatcher) return;
     if (!isAuthReady) return;
 
-    const reloadInterval = setInterval(() => {
-      if (mountedRef.current && AppState.currentState === 'active') {
-        loadCheckIns().catch(console.error);
-      }
-    }, 60_000);
+    const socketBaseUrl = (
+      process.env.EXPO_PUBLIC_WEBSOCKET_URL ||
+      process.env.EXPO_PUBLIC_BACKEND_URL ||
+      ''
+    ).replace(/\/$/, '');
 
-    return () => clearInterval(reloadInterval);
-  }, [isAuthReady, loadCheckIns]);
+    if (!socketBaseUrl) {
+      console.warn('[useCheckIn] Missing socket URL for realtime refresh.');
+      return;
+    }
+
+    //console.log('[useCheckIn] Realtime watcher enabled. Preparing socket connection for check-ins.');
+
+    const ensureSocketConnection = async () => {
+      try {
+        const { token } = await getApiSession();
+        if (!token) {
+          console.warn('[useCheckIn] No API token available. Skipping socket connection.');
+          return;
+        }
+        //console.log('[useCheckIn] Connecting check-in socket:', socketBaseUrl);
+        chatSocketService.connect(socketBaseUrl, token);
+      } catch (error) {
+        console.warn('[useCheckIn] Failed to ensure socket connection:', error);
+      }
+    };
+
+    void ensureSocketConnection();
+
+    const notificationHandler = (envelope: NotificationEnvelope) => {
+      if (!mountedRef.current || AppState.currentState !== 'active') {
+        return;
+      }
+
+      const eventName = getSocketEventName(envelope);
+      //console.log('[useCheckIn] Socket notification received:', eventName ?? 'unknown_event');
+
+      if (!isCheckInSocketEvent(envelope)) {
+        //console.log('[useCheckIn] Ignored socket notification (not schedule_checkin).');
+        return;
+      }
+
+      //console.log('[useCheckIn] schedule_checkin event received. Refreshing check-in data.');
+
+      void loadCheckIns().then(() => {
+        //console.log('[useCheckIn] Check-in data refreshed after schedule_checkin event.');
+        emitCheckInRefresh();
+      }).catch(console.error);
+    };
+
+    const connectionStateHandler = (state: SocketConnectionState) => {
+      //console.log('[useCheckIn] Socket connection state changed:', state);
+      if (!mountedRef.current || state !== SocketConnectionState.CONNECTED) {
+        return;
+      }
+
+      //console.log('[useCheckIn] Socket connected. Triggering check-in sync.');
+      void loadCheckIns().catch(console.error);
+    };
+
+    //console.log('[useCheckIn] Registering socket listeners for check-in events.');
+    chatSocketService.onNotification(notificationHandler);
+    chatSocketService.onConnectionStateChange(connectionStateHandler);
+
+    return () => {
+      //console.log('[useCheckIn] Removing socket listeners for check-in events.');
+      chatSocketService.offNotification(notificationHandler);
+      chatSocketService.offConnectionStateChange(connectionStateHandler);
+    };
+  }, [enableDueWatcher, isAuthReady, loadCheckIns]);
 
   useEffect(() => {
     if (!enableDueWatcher) return;
@@ -440,15 +595,23 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       setPasskeyCountdown((prev) => {
         if (prev <= 1) {
           if (activeCheckIn) {
-            // Backend owns missed determination; trigger due processing and refresh.
-            void processDueCheckins({ limit: 100 }).catch(console.error);
-            void loadCheckIns();
+            // Timer expiry should mark current job timed out and backend reschedules next run.
+            void (async () => {
+              try {
+                await timeoutCheckinJob(activeCheckIn.id, { source: 'passkey_modal_expired' });
+              } catch (error) {
+                console.error('[useCheckIn] Failed to timeout check-in job:', error);
+              } finally {
+                await loadCheckIns();
+                emitCheckInRefresh();
+              }
+            })();
           }
 
           setShowPasskeyModal(false);
           setActiveCheckIn(null);
           setEnteredPasskey('');
-          Alert.alert('Time Expired', 'The passkey entry time has expired. Please schedule another check-in.');
+          Alert.alert('Time Expired', 'The passkey entry time has expired. Your next security check has been rescheduled.');
           return 30;
         }
 
@@ -490,6 +653,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       await addPendingHint(createdSchedule.startAt);
 
       await loadCheckIns();
+      emitCheckInRefresh();
 
       Alert.alert(
         'Check-in Scheduled',
@@ -515,6 +679,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
 
       if (success) {
         await loadCheckIns();
+        emitCheckInRefresh();
         Alert.alert('Check-in Cancelled', 'The security check-in has been cancelled.');
         return true;
       }
@@ -555,6 +720,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
           setEnteredPasskey('');
           setActiveCheckIn(null);
           await loadCheckIns();
+          emitCheckInRefresh();
           return;
         }
 
@@ -572,6 +738,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       setActiveCheckIn(null);
 
       await loadCheckIns();
+      emitCheckInRefresh();
     } catch (error) {
       console.error('[useCheckIn] Error during passkey handling:', error);
       Alert.alert('Validation Error', 'There was an error validating your passkey. Please try again.');

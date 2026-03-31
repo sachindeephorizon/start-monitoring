@@ -36,6 +36,8 @@ import { useEmergency } from '@/features/emergency';
 import { verifyEmergencyPasskeyDetailed } from '@/features/emergency/emergency.passkey';
 import { EMERGENCY_PASSKEY_TIMEOUT_SECONDS } from '@/features/emergency/emergency.constants';
 import { useIOSCompatibleSiren } from '@/hooks/useIOSCompatibleSiren';
+import { useSubscription } from '@/hooks/useSubscription';
+import { useCheckIn } from '@/hooks/useCheckIn';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
 import { Service } from '@/types/services';
@@ -50,10 +52,14 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const auth = useAuth();
+  const { hasAccess: hasSubscriptionAccess } = useSubscription();
+  const checkIn = useCheckIn({ enableDueWatcher: false });
   const insets = useSafeAreaInsets();
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [cameraPermission, setCameraPermission] = useState(false);
+  const hasActiveScheduleCheckIn = checkIn.scheduledCheckIns.length > 0;
+  const activeScheduleBlinkOpacity = useRef(new Animated.Value(1)).current;
   
   // Siren hook - flashlight control callback (simplified for now)
   const handleFlashlightControl = useCallback((enabled: boolean) => {
@@ -153,6 +159,46 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
       }
     }, [navigation])
   );
+
+  useFocusEffect(
+    useCallback(() => {
+      void checkIn.loadCheckIns().catch((error) => {
+        console.error('[HomeScreen] Failed to refresh schedule check-ins:', error);
+      });
+    }, [checkIn.loadCheckIns])
+  );
+
+  useEffect(() => {
+    if (!hasActiveScheduleCheckIn) {
+      activeScheduleBlinkOpacity.stopAnimation();
+      activeScheduleBlinkOpacity.setValue(1);
+      return;
+    }
+
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.timing(activeScheduleBlinkOpacity, {
+          toValue: 0.2,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(activeScheduleBlinkOpacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    blink.start();
+
+    return () => {
+      blink.stop();
+      activeScheduleBlinkOpacity.stopAnimation();
+      activeScheduleBlinkOpacity.setValue(1);
+    };
+  }, [hasActiveScheduleCheckIn, activeScheduleBlinkOpacity]);
+
   const shakeAnimation = useRef(new Animated.Value(0)).current;
   const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -637,14 +683,30 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     await siren.toggleSiren();
   }, [siren]);
 
-  const handleServicePress = (service: string) => {
+  const ensureSubscriptionAccess = useCallback(async (featureName: string) => {
+    if (hasSubscriptionAccess) {
+      return true;
+    }
+
+    return checkSubscriptionAccess(featureName);
+  }, [hasSubscriptionAccess]);
+
+  const handleServicePress = async (service: string) => {
     if (service === 'Video Monitor Me') {
+      const hasAccess = await ensureSubscriptionAccess('Video Monitor Me');
+      if (!hasAccess) return;
       (navigation as any).navigate('VideoMonitor');
     } else if (service === 'Track Me On The Go') {
+      const hasAccess = await ensureSubscriptionAccess('Track Me On The Go');
+      if (!hasAccess) return;
       (navigation as any).navigate('Tracking');
     } else if (service === 'Schedule Check In') {
+      const hasAccess = await ensureSubscriptionAccess('Schedule Check In');
+      if (!hasAccess) return;
       (navigation as any).navigate('ScheduleCheckIn');
     } else if (service === 'Book A Bodyguard') {
+      const hasAccess = await ensureSubscriptionAccess('Book A Bodyguard');
+      if (!hasAccess) return;
       (navigation as any).navigate('BookBodyguard');
     } else {
       // TODO: Implement other service modals
@@ -698,6 +760,9 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
 
   const handleStartAudioCall = async () => {
     if (isStartingCall) return;
+
+    const hasAccess = await ensureSubscriptionAccess('Audio Call');
+    if (!hasAccess) return;
     
     Alert.alert(
       'Call Security Agent',
@@ -732,7 +797,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           {
             text: 'Continue',
             onPress: async () => {
-              const hasAccess = await checkSubscriptionAccess('Video Call');
+              const hasAccess = await ensureSubscriptionAccess('Video Call');
               if (!hasAccess) return;
               const { status } = await Camera.requestCameraPermissionsAsync();
               if (status === 'granted') {
@@ -754,7 +819,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
         {
           text: 'Start Video Call',
           onPress: async () => {
-            const hasAccess = await checkSubscriptionAccess('Video Call');
+            const hasAccess = await ensureSubscriptionAccess('Video Call');
             if (!hasAccess) return;
             await startCall('video', 'Direct video call from homepage');
           }
@@ -768,8 +833,11 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
    * This function is passed to child components, so stable reference improves performance
    */
   const handleOpenChat = useCallback(() => {
-    (navigation as any).navigate('Chat');
-  }, [navigation]);
+    ensureSubscriptionAccess('Chat').then((hasAccess) => {
+      if (!hasAccess) return;
+      (navigation as any).navigate('Chat');
+    });
+  }, [ensureSubscriptionAccess, navigation]);
 
   return (
     <View style={{ flex: 1, backgroundColor: isSirenActive ? siren.bgColor : undefined }}>
@@ -876,7 +944,23 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
             >
               <MaterialIcons name="schedule" size={32} color="#2C3E50" />
               <Text style={serviceCardStyles.serviceTitle}>Schedule Check In</Text>
-              <Text style={serviceCardStyles.serviceSubtitle}>Automated safety calls</Text>
+              <View style={{ flexDirection: 'column', alignItems: 'center' }}>
+                <Text style={serviceCardStyles.serviceSubtitle}>Automated safety calls</Text>
+                {hasActiveScheduleCheckIn && (
+                  <Animated.Text
+                    style={{
+                      marginLeft: 4,
+                      color: '#1FA35B',
+                      fontSize: 12,
+                      fontWeight: '700',
+                      opacity: activeScheduleBlinkOpacity,
+                      marginTop: 4,
+                    }}
+                  >
+                    Active
+                  </Animated.Text>
+                )}
+              </View>
             </TouchableOpacity>
             <TouchableOpacity
               style={[serviceCardStyles.serviceCard, serviceCardStyles.bodyguardCard]}

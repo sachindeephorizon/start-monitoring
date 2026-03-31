@@ -7,7 +7,6 @@ import {
   ActivityIndicator, 
   Animated,
   ScrollView,
-  Platform,
   AppState
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -187,6 +186,12 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
   ];
 
   const finalTitleStyle = titleStyle ? [passkeyModalStyles.passkeyTitle, titleStyle] : passkeyModalStyles.passkeyTitle;
+  const keypadRows: Array<Array<number | null>> = [
+    [1, 2, 3],
+    [4, 5, 6],
+    [7, 8, 9],
+    [null, 0, null],
+  ];
 
   return (
     <Modal
@@ -194,19 +199,19 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
       transparent={true}
       visible={visible}
       onRequestClose={isEmergency ? () => {} : onClose}
-      // 🔥 FOREGROUND ONLY: Ensure emergency modal always runs in foreground
-      presentationStyle={Platform.OS === 'ios' && isEmergency ? 'overFullScreen' : undefined}
+      presentationStyle="overFullScreen"
       // 🔥 FOREGROUND ONLY: Prevent modal from being backgrounded
       hardwareAccelerated={true}
     >
-      <SafeAreaView style={overlayStyle} edges={['top', 'bottom']}>
-        <View style={{ flex: 1, justifyContent: 'center', alignItems: 'center' }}>
+      <SafeAreaView style={overlayStyle} edges={['top', 'right', 'bottom', 'left']}>
+        <View style={{ flex: 1 }}>
           <Animated.View style={modalViewStyle}>
             <ScrollView
-              contentContainerStyle={{ paddingBottom: 20 }}
+              contentContainerStyle={{ paddingBottom: 24 }}
               showsVerticalScrollIndicator={true}
               bounces={false}
               keyboardShouldPersistTaps="handled"
+              style={{ flex: 1 }}
             >
             <View style={passkeyModalStyles.passkeyHeader}>
               <MaterialIcons name={icon} size={48} color={iconColor} />
@@ -261,17 +266,27 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
             </View>
 
             <View style={passkeyModalStyles.passkeyKeypad}>
-              {[1, 2, 3, 4, 5, 6, 7, 8, 9, 0].map((number) => (
-                <TouchableOpacity
-                  key={number}
-                  style={isEmergency ? passkeyModalStyles.passkeyKeyButton : passkeyModalStyles.passkeyKey}
-                  onPress={() => handleNumberPress(number)}
-                  accessible={true}
-                  accessibilityLabel={`Number ${number}`}
-                  accessibilityRole="button"
-                >
-                  <Text style={passkeyModalStyles.passkeyKeyText}>{number}</Text>
-                </TouchableOpacity>
+              {keypadRows.map((row, rowIndex) => (
+                <View key={`row-${rowIndex}`} style={passkeyModalStyles.passkeyKeypadRow}>
+                  {row.map((number, columnIndex) => {
+                    if (number === null) {
+                      return <View key={`spacer-${rowIndex}-${columnIndex}`} style={passkeyModalStyles.passkeyKeySpacer} />;
+                    }
+
+                    return (
+                      <TouchableOpacity
+                        key={number}
+                        style={isEmergency ? passkeyModalStyles.passkeyKeyButton : passkeyModalStyles.passkeyKey}
+                        onPress={() => handleNumberPress(number)}
+                        accessible={true}
+                        accessibilityLabel={`Number ${number}`}
+                        accessibilityRole="button"
+                      >
+                        <Text style={passkeyModalStyles.passkeyKeyText}>{number}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
               ))}
             </View>
 

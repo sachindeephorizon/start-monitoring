@@ -39,7 +39,7 @@ const formatTime = (time: CheckInTime): string => {
 
 export default function ScheduleCheckInScreen() {
   const navigation = useNavigation();
-  const checkIn = useCheckIn({ enableDueWatcher: false });
+  const checkIn = useCheckIn({ enableDueWatcher: true });
 
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
