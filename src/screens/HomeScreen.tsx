@@ -41,12 +41,49 @@ import { useCheckIn } from '@/hooks/useCheckIn';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
 import { Service } from '@/types/services';
+import { getMyThreads } from '@/api/chat';
+import { chatSocketService, NotificationEnvelope } from '@/realtime/core';
+import SecurityAgentContactCard from '@/components/home/SecurityAgentContactCard';
 
 interface HomeScreenProps {
   navigation: any;
 }
 
 const { height: screenHeight } = Dimensions.get('window');
+
+const isObject = (value: unknown): value is Record<string, unknown> => {
+  return !!value && typeof value === 'object';
+};
+
+const asString = (value: unknown): string | null => {
+  if (typeof value !== 'string') return null;
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const getSocketEventName = (envelope: NotificationEnvelope): string | null => {
+  if (typeof envelope?.event === 'string' && envelope.event !== 'notification') {
+    return envelope.event;
+  }
+
+  if (isObject(envelope?.data) && typeof envelope.data.event === 'string') {
+    return envelope.data.event;
+  }
+
+  return null;
+};
+
+const getSocketEventData = (envelope: NotificationEnvelope): Record<string, unknown> => {
+  if (!isObject(envelope?.data)) {
+    return {};
+  }
+
+  if (isObject(envelope.data.data)) {
+    return envelope.data.data;
+  }
+
+  return envelope.data;
+};
 
 const HomeScreen: React.FC<HomeScreenProps> = () => {
   const navigation = useNavigation();
@@ -58,6 +95,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [cameraPermission, setCameraPermission] = useState(false);
+  const [hasActiveChatBadge, setHasActiveChatBadge] = useState(false);
   const hasActiveScheduleCheckIn = checkIn.scheduledCheckIns.length > 0;
   const activeScheduleBlinkOpacity = useRef(new Animated.Value(1)).current;
   
@@ -168,6 +206,53 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     }, [checkIn.loadCheckIns])
   );
 
+  const refreshChatBadge = useCallback(async () => {
+    try {
+      const threads = await getMyThreads();
+      const hasOpenThread = threads.some((thread) => thread.status === 'OPEN');
+      setHasActiveChatBadge(hasOpenThread);
+    } catch (error) {
+      console.warn('[HomeScreen] Failed to refresh chat badge state:', error);
+    }
+  }, []);
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshChatBadge();
+    }, [refreshChatBadge])
+  );
+
+  useEffect(() => {
+    if (!auth.isAuthReady || !auth.user?.id) return;
+
+    const notificationHandler = (envelope: NotificationEnvelope) => {
+      const eventName = getSocketEventName(envelope);
+      if (!eventName) return;
+
+      if (eventName === 'chat.message.created') {
+        const payload = getSocketEventData(envelope);
+        const senderId = asString(payload.senderId);
+
+        if (senderId && senderId === auth.user?.id) {
+          return;
+        }
+
+        setHasActiveChatBadge(true);
+        return;
+      }
+
+      if (eventName === 'chat.thread.resolved' || eventName === 'chat.thread.assigned') {
+        void refreshChatBadge();
+      }
+    };
+
+    chatSocketService.onNotification(notificationHandler);
+
+    return () => {
+      chatSocketService.offNotification(notificationHandler);
+    };
+  }, [auth.isAuthReady, auth.user?.id, refreshChatBadge]);
+
   useEffect(() => {
     if (!hasActiveScheduleCheckIn) {
       activeScheduleBlinkOpacity.stopAnimation();
@@ -200,7 +285,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   }, [hasActiveScheduleCheckIn, activeScheduleBlinkOpacity]);
 
   const shakeAnimation = useRef(new Animated.Value(0)).current;
-  const countdownIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Emergency status message (auto-dismissing)
   const [emergencyStatusMessage, setEmergencyStatusMessage] = useState<string | null>(null);
@@ -214,7 +299,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
    * and React warnings about setting state on unmounted components.
    */
   const mountedRef = useRef(true);
-  const statusDismissTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const statusDismissTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Cleanup on unmount
   useEffect(() => {
@@ -976,48 +1061,13 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
             </TouchableOpacity>
           </View>
           
-          {/* Security Agent Contact Card */}
-          <View
-            style={serviceCardStyles.securityAgentCard}
-            accessible={true}
-            accessibilityLabel="Security Agent contact options"
-          >
-            <Text style={serviceCardStyles.securityAgentTitle}>Security Agent</Text>
-            <View style={serviceCardStyles.contactIcons}>
-              <TouchableOpacity
-                style={[serviceCardStyles.contactIcon, isStartingCall && { opacity: 0.5 }]}
-                onPress={handleStartAudioCall}
-                disabled={isStartingCall}
-                accessible={true}
-                accessibilityLabel="Call security agent"
-                accessibilityRole="button"
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <MaterialIcons name="phone" size={24} color="#2C3E50" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[serviceCardStyles.contactIcon, serviceCardStyles.contactIconSpacing]}
-                onPress={handleOpenChat}
-                accessible={true}
-                accessibilityLabel="Chat with security agent"
-                accessibilityRole="button"
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <MaterialIcons name="chat" size={24} color="#2C3E50" />
-              </TouchableOpacity>
-              <TouchableOpacity
-                style={[serviceCardStyles.contactIcon, serviceCardStyles.contactIconSpacing, isStartingCall && { opacity: 0.5 }]}
-                onPress={handleStartVideoCall}
-                disabled={isStartingCall}
-                accessible={true}
-                accessibilityLabel="Video call security agent"
-                accessibilityRole="button"
-                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
-              >
-                <MaterialIcons name="videocam" size={24} color="#2C3E50" />
-              </TouchableOpacity>
-            </View>
-          </View>
+          <SecurityAgentContactCard
+            isStartingCall={isStartingCall}
+            hasActiveChatBadge={hasActiveChatBadge}
+            onStartAudioCall={handleStartAudioCall}
+            onOpenChat={handleOpenChat}
+            onStartVideoCall={handleStartVideoCall}
+          />
 
           {/* Siren Button */}
           <View style={emergencyStyles.sirenSection}>

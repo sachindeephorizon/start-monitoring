@@ -82,6 +82,14 @@ export async function setupNotificationChannels(): Promise<void> {
     return;
   }
 
+
+  await Notifications.setNotificationChannelAsync('default', {
+      name: 'default',
+      importance: Notifications.AndroidImportance.MAX,
+      vibrationPattern: [0, 250, 250, 250],
+      lightColor: '#FF0000',
+    });
+
   // Create notification channels for Android
   await Notifications.setNotificationChannelAsync(NOTIFICATION_CHANNELS.emergency, {
     name: NOTIFICATION_CHANNEL_NAMES.emergency,

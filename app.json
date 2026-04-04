@@ -51,6 +51,7 @@
       },
       "package": "com.deephorizon.security",
       "versionCode": 139,
+      "googleServicesFile": "./google-services.json",
       "permissions": [
         "ACCESS_FINE_LOCATION",
         "ACCESS_COARSE_LOCATION",
@@ -94,7 +95,8 @@
         }
       ],
       "expo-video",
-      "./plugins/withSubscriptionStoreView"
+      "./plugins/withSubscriptionStoreView",
+      "./plugins/withNotifeeAndroidFix"
     ],
     "extra": {
       "eas": {

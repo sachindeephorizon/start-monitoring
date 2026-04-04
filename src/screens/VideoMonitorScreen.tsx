@@ -13,6 +13,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Camera } from 'expo-camera';
+import * as Location from 'expo-location';
 import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
 import AudioCallScreen from '@/screens/AudioCallScreen';
 import { useAuth } from '@/core/auth';
@@ -21,6 +22,7 @@ import { setCallPriorityActive } from '@/services/callPriority';
 import { Service } from '@/types/services';
 import { styles as videoMonitorStyles } from '@/components/modals/VideoMonitorModal.styles';
 import { useCallEndedSocket } from '@/hooks/useCallEndedSocket';
+import { locationTrackingSocketService } from '@/core/location';
 
 const VideoMonitorScreen: React.FC = () => {
 	const navigation = useNavigation();
@@ -45,6 +47,48 @@ const VideoMonitorScreen: React.FC = () => {
 	const [joinExistingCall, setJoinExistingCall] = useState(false);
 	const [isRequestingPermissions, setIsRequestingPermissions] = useState(false);
 	const autoStartTriggeredRef = useRef(false);
+	const trackedSessionIdRef = useRef<string | null>(null);
+
+	const ensureLocationPermission = useCallback(async (): Promise<boolean> => {
+		const current = await Location.getForegroundPermissionsAsync();
+
+		if (current.status === 'granted') {
+			return true;
+		}
+
+		if (current.status === 'denied') {
+			Alert.alert(
+				'Location Permission Required',
+				'GPS access is required to start monitoring and share live location updates.',
+				[
+					{ text: 'Cancel', style: 'cancel' },
+					{
+						text: 'Open Settings',
+						onPress: () => {
+							if (Platform.OS === 'ios') {
+								Linking.openURL('app-settings:');
+							} else {
+								Linking.openSettings();
+							}
+						}
+					}
+				]
+			);
+			return false;
+		}
+
+		const requested = await Location.requestForegroundPermissionsAsync();
+		if (requested.status === 'granted') {
+			return true;
+		}
+
+		Alert.alert(
+			'Location Permission Required',
+			'GPS permission is required before starting monitoring.',
+			[{ text: 'OK' }]
+		);
+		return false;
+	}, []);
 
 	const startCall = useCallback(async (callType: 'video' | 'audio', reason: string, agentId?: string) => {
 		try {
@@ -209,6 +253,11 @@ const VideoMonitorScreen: React.FC = () => {
 
 		setIsRequestingPermissions(true);
 		try {
+			const locationGranted = await ensureLocationPermission();
+			if (!locationGranted) {
+				return;
+			}
+
 			const cameraResult = await Camera.requestCameraPermissionsAsync();
 			const micResult = await Camera.requestMicrophonePermissionsAsync();
 
@@ -251,6 +300,11 @@ const VideoMonitorScreen: React.FC = () => {
 
 	const handleStartMonitoring = async () => {
 		try {
+			const locationGranted = await ensureLocationPermission();
+			if (!locationGranted) {
+				return;
+			}
+
 			// Check camera permission
 			if (!cameraPermission) {
 				const { status } = await Camera.requestCameraPermissionsAsync();
@@ -273,7 +327,53 @@ const VideoMonitorScreen: React.FC = () => {
 		}
 	};
 
+	useEffect(() => {
+		if (!showCall || !callSession || isAudioCall) {
+			return;
+		}
+
+		if (trackedSessionIdRef.current === callSession.id) {
+			return;
+		}
+
+		let cancelled = false;
+
+		const startLocationTracking = async () => {
+			const result = await locationTrackingSocketService.startTracking({
+				type: 'VIDEO_CALL',
+			});
+
+			if (cancelled) {
+				return;
+			}
+
+			if (!result.ok) {
+				console.warn('[VideoMonitorScreen] Failed to start location tracking:', result.reason);
+				return;
+			}
+
+			trackedSessionIdRef.current = callSession.id;
+		};
+
+		void startLocationTracking();
+
+		return () => {
+			cancelled = true;
+		};
+	}, [showCall, callSession, isAudioCall]);
+
 	const handleEndVideoSession = async () => {
+		trackedSessionIdRef.current = null;
+
+		// Use the service's live isActive state rather than the ref.
+		// The ref is set after startTracking resolves, so it can be null if call.ended
+		// fires before the async start completes (e.g. very short calls).
+		if (locationTrackingSocketService.getState().isActive) {
+			await locationTrackingSocketService.stopTracking({
+				status: 'COMPLETED',
+			});
+		}
+
 		if (callSession) {
 			if (isAudioCall) {
 				// End audio call
@@ -291,6 +391,15 @@ const VideoMonitorScreen: React.FC = () => {
 		setIsMonitoring(false);
 		setCallPriorityActive(false);
 	};
+
+	useEffect(() => {
+		return () => {
+			trackedSessionIdRef.current = null;
+			if (locationTrackingSocketService.getState().isActive) {
+				void locationTrackingSocketService.stopTracking({ status: 'CANCELLED' });
+			}
+		};
+	}, []);
 
 	const handleCallEnd = () => {
 		handleEndVideoSession();

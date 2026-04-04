@@ -128,9 +128,30 @@ export const serviceCardStyles = StyleSheet.create({
     backgroundColor: 'rgba(77, 168, 218, 0.2)',
     borderWidth: 1,
     borderColor: 'rgba(77, 168, 218, 0.3)',
+    position: 'relative',
   },
   contactIconSpacing: {
     marginLeft: 8,
+  },
+  contactIconActive: {
+    backgroundColor: '#1FA35B',
+    borderColor: '#7EF0A8',
+    shadowColor: '#1FA35B',
+    shadowOffset: { width: 0, height: 0 },
+    shadowOpacity: 0.65,
+    shadowRadius: 10,
+    elevation: 8,
+  },
+  activeBadgeDot: {
+    position: 'absolute',
+    top: 4,
+    right: 4,
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    backgroundColor: '#1FA35B',
+    borderWidth: 1,
+    borderColor: '#ffffff',
   },
 });
 

@@ -131,11 +131,14 @@ export function routeFromNotification(payload: PushPayload, notificationId?: str
       }
 
       case 'check_in': {
-        if (payload.entity_id) {
-          navigateToMainScreen('CheckIn', { checkInId: payload.entity_id }, notificationId);
-        } else {
-          navigateToMainScreen('Home', undefined, notificationId);
-        }
+        // Scheduled check-ins can rotate the active job ID after a push is sent.
+        // Navigating directly with a notification-time checkInId can open a stale
+        // CheckIn screen while the shared due-job watcher also surfaces the latest
+        // active modal, resulting in duplicate passkey prompts.
+        //
+        // Route to Home instead and let the global CheckInPasskeyHost refresh via
+        // API/socket and present the single current due check-in modal.
+        navigateToMainScreen('Home', undefined, notificationId);
         break;
       }
 

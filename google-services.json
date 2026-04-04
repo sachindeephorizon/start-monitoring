@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "830527674241",
+    "project_id": "deep-horizon-security",
+    "storage_bucket": "deep-horizon-security.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:830527674241:android:2f4d6814c256bb111e7a80",
+        "android_client_info": {
+          "package_name": "com.deephorizon.security"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyCF_6H4m5ekxtcJ1rOFZuN695oyb0_5S3g"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
