@@ -149,7 +149,7 @@ interface ScheduledCheckInItem {
 
 interface ActiveCheckInJob {
   id: string;
-  checkinId: string;
+  scheduleId: string;
   scheduledAt: string;
   attempts: number;
 }
@@ -183,6 +183,8 @@ export interface UseCheckInReturn {
   isPasskeyProcessing: boolean;
   activeCheckIn: ActiveCheckInJob | null;
   passkeyCountdown: number;
+  passkeySubmitEnabled: boolean;
+  passkeyStatusMessage: string | null;
 
   handlePasskeySubmit: () => Promise<void>;
 }
@@ -222,6 +224,8 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
   scheduledCheckInsRef.current = scheduledCheckIns;
   const scheduledJobsRef = useRef<ActiveCheckInJob[]>([]);
   scheduledJobsRef.current = scheduledJobs;
+  const activeCheckInRef = useRef<ActiveCheckInJob | null>(activeCheckIn);
+  activeCheckInRef.current = activeCheckIn;
   const pendingHintsRef = useRef<PendingScheduleHint[]>([]);
   const isLoadingCheckInsRef = useRef(false);
 
@@ -255,6 +259,70 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       await savePendingHints(pruned);
     }
   }, [savePendingHints]);
+
+  const sortJobsByScheduledAtAsc = useCallback((jobs: ActiveCheckInJob[]): ActiveCheckInJob[] => {
+    return [...jobs].sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+  }, []);
+
+  const sortJobsByScheduledAtDesc = useCallback((jobs: ActiveCheckInJob[]): ActiveCheckInJob[] => {
+    return [...jobs].sort((a, b) => new Date(b.scheduledAt).getTime() - new Date(a.scheduledAt).getTime());
+  }, []);
+
+  const getLatestScheduledJobForSchedule = useCallback((scheduleId: string, jobs: ActiveCheckInJob[]): ActiveCheckInJob | null => {
+    return sortJobsByScheduledAtDesc(jobs).find((job) => job.scheduleId === scheduleId) ?? null;
+  }, [sortJobsByScheduledAtDesc]);
+
+  const reconcileActiveCheckIn = useCallback((jobs: ActiveCheckInJob[]) => {
+    const current = activeCheckInRef.current;
+    if (!current) return;
+
+    const replacement = getLatestScheduledJobForSchedule(current.scheduleId, jobs);
+
+    if (!replacement) {
+      setActiveCheckIn(null);
+      return;
+    }
+
+    if (replacement.id !== current.id || replacement.scheduledAt !== current.scheduledAt) {
+      console.log('[useCheckIn] Replacing active job with latest scheduled job:', {
+        previousJobId: current.id,
+        nextJobId: replacement.id,
+        scheduleId: current.scheduleId,
+      });
+      setActiveCheckIn(replacement);
+    }
+  }, [getLatestScheduledJobForSchedule]);
+
+  const fetchScheduledJobsForSchedule = useCallback(async (scheduleId: string): Promise<ActiveCheckInJob[]> => {
+    const jobs = await getScheduleCheckInJobs(scheduleId);
+    return sortJobsByScheduledAtAsc(
+      jobs
+        .filter((job) => job.status === 'SCHEDULED')
+        .map((job) => ({
+          id: job.id,
+          scheduleId,
+          scheduledAt: job.scheduledAt,
+          attempts: job.attempts,
+        })),
+    );
+  }, [sortJobsByScheduledAtAsc]);
+
+  const resolveLatestScheduledJobForSubmit = useCallback(async (
+    scheduleId: string,
+    preferredJobId?: string,
+  ): Promise<ActiveCheckInJob | null> => {
+    const latestJobs = await fetchScheduledJobsForSchedule(scheduleId);
+
+    if (latestJobs.length === 0) {
+      return null;
+    }
+
+    const preferredJob = preferredJobId
+      ? latestJobs.find((job) => job.id === preferredJobId) ?? null
+      : null;
+
+    return preferredJob ?? sortJobsByScheduledAtDesc(latestJobs)[0] ?? null;
+  }, [fetchScheduledJobsForSchedule, sortJobsByScheduledAtDesc]);
 
   const checkForDueJobs = useCallback(() => {
     if (!enableDueWatcher) return;
@@ -347,21 +415,19 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
             .filter((job) => job.status === 'SCHEDULED')
             .map((job) => ({
               id: job.id,
-              checkinId: schedule.id,
+              scheduleId: schedule.id,
               scheduledAt: job.scheduledAt,
               attempts: job.attempts,
             }));
         }),
       );
 
-      const allScheduledJobs = jobsLists
-        .flat()
-        .sort((a, b) => new Date(a.scheduledAt).getTime() - new Date(b.scheduledAt).getTime());
+      const allScheduledJobs = sortJobsByScheduledAtAsc(jobsLists.flat());
 
       const earliestScheduledJobByCheckinId = new Map<string, string>();
       for (const job of allScheduledJobs) {
-        if (!earliestScheduledJobByCheckinId.has(job.checkinId)) {
-          earliestScheduledJobByCheckinId.set(job.checkinId, job.scheduledAt);
+        if (!earliestScheduledJobByCheckinId.has(job.scheduleId)) {
+          earliestScheduledJobByCheckinId.set(job.scheduleId, job.scheduledAt);
         }
       }
 
@@ -384,6 +450,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       // for next render/interval tick.
       scheduledJobsRef.current = allScheduledJobs;
       setScheduledJobs(allScheduledJobs);
+      reconcileActiveCheckIn(allScheduledJobs);
 
       const pendingJobIds = new Set(allScheduledJobs.map((job) => job.id));
       presentedJobIdsRef.current.forEach((jobId) => {
@@ -404,7 +471,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       setIsLoadingCheckIns(false);
       isLoadingCheckInsRef.current = false;
     }
-  }, [checkForDueJobs, prunePendingHints, resolveScheduleDisplayAt]);
+  }, [checkForDueJobs, prunePendingHints, reconcileActiveCheckIn, resolveScheduleDisplayAt, sortJobsByScheduledAtAsc]);
   loadCheckInsRef.current = loadCheckIns;
 
   useEffect(() => {
@@ -598,7 +665,10 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
             // Timer expiry should mark current job timed out and backend reschedules next run.
             void (async () => {
               try {
-                await timeoutCheckinJob(activeCheckIn.id, { source: 'passkey_modal_expired' });
+                const latestJob = await resolveLatestScheduledJobForSubmit(activeCheckIn.scheduleId, activeCheckIn.id);
+                if (latestJob) {
+                  await timeoutCheckinJob(latestJob.id, { source: 'passkey_modal_expired' });
+                }
               } catch (error) {
                 console.error('[useCheckIn] Failed to timeout check-in job:', error);
               } finally {
@@ -625,7 +695,7 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
         passkeyTimerRef.current = null;
       }
     };
-  }, [showPasskeyModal, activeCheckIn, loadCheckIns]);
+  }, [showPasskeyModal, activeCheckIn, loadCheckIns, resolveLatestScheduledJobForSubmit]);
 
   const scheduleCheckIn = useCallback(async (): Promise<boolean> => {
     if (isScheduling) return false;
@@ -694,17 +764,55 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
   }, [loadCheckIns]);
 
   const handlePasskeySubmit = useCallback(async (): Promise<void> => {
-    if (isPasskeyProcessing || !activeCheckIn) {
+    if (isPasskeyProcessing) {
       return;
     }
 
-    const job = activeCheckIn;
+    const currentJob = activeCheckInRef.current;
+    if (!currentJob) {
+      return;
+    }
+
     setIsPasskeyProcessing(true);
 
     try {
-      const result = await updateCheckinJobStatus(job.id, {
-        passcode: enteredPasskey,
-      });
+      let submitJob = await resolveLatestScheduledJobForSubmit(currentJob.scheduleId, currentJob.id);
+
+      if (!submitJob) {
+        await loadCheckIns();
+        emitCheckInRefresh();
+        Alert.alert('Check-in Unavailable', 'Waiting for next check-in window.');
+        return;
+      }
+
+      if (submitJob.id !== currentJob.id) {
+        setActiveCheckIn(submitJob);
+      }
+
+      let result;
+
+      try {
+        result = await updateCheckinJobStatus(submitJob.id, {
+          passcode: enteredPasskey,
+        });
+      } catch (error) {
+        console.warn('[useCheckIn] Passcode submit failed for current job. Refetching latest scheduled job and retrying once.', error);
+
+        submitJob = await resolveLatestScheduledJobForSubmit(currentJob.scheduleId);
+
+        if (!submitJob) {
+          await loadCheckIns();
+          emitCheckInRefresh();
+          Alert.alert('Check-in Already Processed', 'This check-in was already processed.');
+          return;
+        }
+
+        setActiveCheckIn(submitJob);
+
+        result = await updateCheckinJobStatus(submitJob.id, {
+          passcode: enteredPasskey,
+        });
+      }
 
       if (!mountedRef.current) return;
 
@@ -741,11 +849,19 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       emitCheckInRefresh();
     } catch (error) {
       console.error('[useCheckIn] Error during passkey handling:', error);
+      await loadCheckIns().catch(console.error);
       Alert.alert('Validation Error', 'There was an error validating your passkey. Please try again.');
     } finally {
       setIsPasskeyProcessing(false);
     }
-  }, [isPasskeyProcessing, activeCheckIn, enteredPasskey, loadCheckIns]);
+  }, [isPasskeyProcessing, enteredPasskey, loadCheckIns, resolveLatestScheduledJobForSubmit]);
+
+  const passkeySubmitEnabled = !!activeCheckIn;
+  const passkeyStatusMessage = activeCheckIn
+    ? null
+    : scheduledCheckIns.length > 0
+      ? 'Waiting for next check-in window.'
+      : 'Check-in already processed.';
 
   return {
     checkInTime,
@@ -771,6 +887,8 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
     isPasskeyProcessing,
     activeCheckIn,
     passkeyCountdown,
+    passkeySubmitEnabled,
+    passkeyStatusMessage,
 
     handlePasskeySubmit,
   };

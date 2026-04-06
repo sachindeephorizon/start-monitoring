@@ -47,6 +47,7 @@ import { AppStateProvider } from '@/context/AppStateContext';
 import { setupNotificationHandlers, setupNotificationChannels } from '@/core/notifications';
 import { useNotificationRouting, usePushNotifications } from '@/core/notifications';
 import { useLiveLocationPublisher } from '@/core/location/useLiveLocationPublisher';
+import { InAppAlertBanner, InAppAlertBridge } from '@/core/in-app-alerts';
 
 // iOS In-App Purchase
 import { IOSPurchaseService } from '@/features/subscription/ios-purchase.service';
@@ -73,6 +74,10 @@ function NotificationSetup() {
 function LiveLocationSetup() {
   useLiveLocationPublisher();
   return null;
+}
+
+function InAppAlertSetup() {
+  return <InAppAlertBridge />;
 }
 
 function NativeSplashGate({ children }: { children: React.ReactNode }) {
@@ -145,11 +150,13 @@ export default function App() {
           <AuthProvider>
             <NotificationSetup />
             <LiveLocationSetup />
+            <InAppAlertSetup />
             <NativeSplashGate>
               <BootGuard>
                 <RootNavigator />
               </BootGuard>
             </NativeSplashGate>
+            <InAppAlertBanner />
             <StatusBar style="light" />
           </AuthProvider>
         </AppStateProvider>

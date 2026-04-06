@@ -19,6 +19,8 @@ export default function CheckInPasskeyHost() {
       enteredPasskey={checkIn.enteredPasskey}
       onPasskeyChange={checkIn.setEnteredPasskey}
       isLoading={checkIn.isPasskeyProcessing}
+      isSubmitDisabled={!checkIn.passkeySubmitEnabled}
+      helperText={checkIn.passkeyStatusMessage ?? undefined}
     />
   );
 }

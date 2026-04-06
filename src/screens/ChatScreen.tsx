@@ -4,6 +4,7 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import ChatBox from '@/components/chat/ChatBox';
 import { useChat } from '@/hooks/useChat';
 import { formatChatTime } from '@/utils/chat';
+import { clearPendingNotificationNav } from '@/core/notifications/notification.router';
 
 export default function ChatScreen() {
   const navigation = useNavigation();
@@ -22,6 +23,11 @@ export default function ChatScreen() {
   const isCallInitiationInFlightRef = useRef(false);
 
   useEffect(() => {
+    // Consume/clear pending notification intent once Chat is mounted.
+    // Without this, HomeScreen can later consume the stale pending intent
+    // and navigate back to Chat again, causing duplicate modal-like opens.
+    clearPendingNotificationNav('ChatScreen mounted');
+
     const unsubscribe = (navigation as any).addListener('focus', () => {
       setIsInitiatingCall(false);
       setCallInitiationLabel(null);
@@ -32,7 +38,7 @@ export default function ChatScreen() {
   }, [navigation]);
 
   const handleClose = useCallback(() => {
-    navigation.goBack();
+    (navigation as any).navigate('Home');
   }, [navigation]);
 
   const handleSendMessage = useCallback(async (text?: string) => {
@@ -134,6 +140,7 @@ export default function ChatScreen() {
   return (
     <ChatBox
       visible={true}
+      useModal={false}
       chatMessages={chat.messages}
       chatInput={chatInput}
       isTyping={chat.isTyping}

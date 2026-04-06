@@ -31,6 +31,8 @@ export interface EmergencyPasskeyModalProps {
   onPasskeyChange: (passkey: string) => void;
   isLoading?: boolean;
   shakeAnimation?: Animated.Value;
+  helperText?: string;
+  isSubmitDisabled?: boolean;
 }
 
 export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
@@ -51,11 +53,13 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
   onPasskeyChange,
   isLoading = false,
   shakeAnimation,
+  helperText,
+  isSubmitDisabled = false,
 }) => {
   // 🔥 FOREGROUND ONLY: Simple, reliable countdown that always updates in foreground
   const [displaySeconds, setDisplaySeconds] = useState(10);
   const deadlineRef = useRef<number | null>(null);
-  const intervalRef = useRef<NodeJS.Timeout | null>(null);
+  const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const lastDisplayedSecondsRef = useRef<number>(10);
   const modalVisibleRef = useRef(false);
   
@@ -192,6 +196,7 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
     [7, 8, 9],
     [null, 0, null],
   ];
+  const submitDisabled = enteredPasskey.length !== 4 || isLoading || isSubmitDisabled;
 
   return (
     <Modal
@@ -305,15 +310,15 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
               <TouchableOpacity
                 style={[
                   passkeyModalStyles.passkeySubmitButton,
-                  enteredPasskey.length === 4 && passkeyModalStyles.passkeySubmitButtonActive,
+                  enteredPasskey.length === 4 && !isSubmitDisabled && passkeyModalStyles.passkeySubmitButtonActive,
                   isEmergency && { backgroundColor: '#CC0022' }
                 ]}
                 onPress={onSubmit}
-                disabled={enteredPasskey.length !== 4 || isLoading}
+                disabled={submitDisabled}
                 accessible={true}
                 accessibilityLabel={isEmergency ? "Cancel emergency" : "Verify passkey"}
                 accessibilityRole="button"
-                accessibilityState={{ disabled: enteredPasskey.length !== 4 || isLoading }}
+                accessibilityState={{ disabled: submitDisabled }}
               >
                 {isLoading ? (
                   <ActivityIndicator size="small" color="#ffffff" />
@@ -326,6 +331,11 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
             </View>
 
             <View style={passkeyModalStyles.passkeyDemo}>
+              {helperText ? (
+                <Text style={passkeyModalStyles.passkeyTimeout}>
+                  {helperText}
+                </Text>
+              ) : null}
               <Text style={[
                 passkeyModalStyles.passkeyTimeout,
                 isEmergency && { color: '#CC0022' }

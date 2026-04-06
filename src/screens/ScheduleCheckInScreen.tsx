@@ -39,7 +39,9 @@ const formatTime = (time: CheckInTime): string => {
 
 export default function ScheduleCheckInScreen() {
   const navigation = useNavigation();
-  const checkIn = useCheckIn({ enableDueWatcher: true });
+  // Due watcher + passkey modal is owned globally by CheckInPasskeyHost.
+  // Keep this screen focused on scheduling UI only to avoid duplicate timers.
+  const checkIn = useCheckIn({ enableDueWatcher: false });
 
   const [showDatePicker, setShowDatePicker] = useState(false);
   const [showTimePicker, setShowTimePicker] = useState(false);
@@ -376,23 +378,6 @@ export default function ScheduleCheckInScreen() {
         onClose={() => setShowTimePicker(false)}
       />
 
-      {/* Passkey Modal */}
-      {checkIn.showPasskeyModal && (
-        <EmergencyPasskeyModal
-          visible={true}
-          onSubmit={checkIn.handlePasskeySubmit}
-          title="Security Check-In"
-          subtitle="Enter passkey to verify"
-          icon="security"
-          iconColor="#2c3e50"
-          isEmergency={false}
-          emergencyCountdown={checkIn.passkeyCountdown}
-          emergencyDeadlineMs={checkIn.activeCheckIn ? new Date(checkIn.activeCheckIn.scheduledAt).getTime() + 30 * 1000 : undefined}
-          enteredPasskey={checkIn.enteredPasskey}
-          onPasskeyChange={checkIn.setEnteredPasskey}
-          isLoading={checkIn.isPasskeyProcessing}
-        />
-      )}
     </SafeAreaView>
   );
 }

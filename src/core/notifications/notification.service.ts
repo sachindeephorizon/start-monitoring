@@ -3,7 +3,7 @@ import * as Device from 'expo-device';
 import { Platform } from 'react-native';
 import { EXPO_PUSH_TOKEN_TYPE } from './notification.constants';
 import { createUserDevice, unregisterDevice } from '@/api/notifications';
-import { useAuth } from '../auth';
+import { AuthSession } from '@/core/auth';
 
 
 export const PROJECT_ID = '27fb532d-c0f0-45e5-919e-0e7b9a62366d';
@@ -38,11 +38,11 @@ export const NotificationService = {
       const token = tokenData.data;
       if (!token) return null;
 
-      const auth = useAuth();
-      const user = auth?.user;
+      const session = await AuthSession.load();
+      const userId = session?.user?.id;
 
-      if (user) {
-        await this.storeToken(token, user.id);
+      if (userId) {
+        await this.storeToken(token, userId);
       }
 
       return token;
@@ -60,6 +60,8 @@ export const NotificationService = {
         os_version: Device.osVersion || undefined,
         device_model: Device.modelName || undefined,
       };
+
+      console.log('[Notification Service] Storing device token with info:', deviceInfo);
 
       await createUserDevice({
         token: deviceInfo.token,

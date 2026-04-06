@@ -36,6 +36,7 @@ interface ChatMessage {
 
 interface ChatBoxProps {
   visible: boolean;
+  useModal?: boolean;
   chatMessages: ChatMessage[];
   chatInput: string;
   isTyping: boolean;
@@ -57,6 +58,7 @@ interface ChatBoxProps {
 
 const ChatBox: React.FC<ChatBoxProps> = ({
   visible,
+  useModal = true,
   chatMessages,
   chatInput,
   isTyping,
@@ -160,14 +162,12 @@ const ChatBox: React.FC<ChatBoxProps> = ({
     }
   }, [visible]);
 
-  return (
-    <Modal
-      animationType="slide"
-      transparent={false}
-      visible={visible}
-      onRequestClose={onClose}
-    >
-      <View style={styles.chatContainer}>
+  if (!visible) {
+    return null;
+  }
+
+  const content = (
+    <View style={styles.chatContainer}>
         <KeyboardAvoidingView
           style={{ flex: 1 }}
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -399,6 +399,20 @@ const ChatBox: React.FC<ChatBoxProps> = ({
           </View>
         </KeyboardAvoidingView>
       </View>
+  );
+
+  if (!useModal) {
+    return content;
+  }
+
+  return (
+    <Modal
+      animationType="slide"
+      transparent={false}
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      {content}
     </Modal>
   );
 };

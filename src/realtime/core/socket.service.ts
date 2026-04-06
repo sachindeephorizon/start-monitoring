@@ -92,6 +92,37 @@ class ChatSocketService {
     };
   }
 
+  emit<TPayload>(event: string, payload: TPayload): void {
+    if (!this.socket) {
+      throw new Error('Socket is not connected');
+    }
+
+    this.socket.emit(event, payload);
+  }
+
+  emitWithAck<TPayload, TAck>(
+    event: string,
+    payload: TPayload,
+    timeoutMs = 8_000,
+  ): Promise<TAck> {
+    if (!this.socket) {
+      return Promise.reject(new Error('Socket is not connected'));
+    }
+
+    return new Promise<TAck>((resolve, reject) => {
+      this.socket
+        ?.timeout(timeoutMs)
+        .emit(event, payload, (error: Error | null, ack: TAck) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve(ack);
+        });
+    });
+  }
+
   private bindCoreListeners(socket: Socket): void {
     socket.on(SocketChannel.NOTIFICATION, (payload: NotificationEnvelope) => {
       this.notificationHandlers.forEach((handler) => {
