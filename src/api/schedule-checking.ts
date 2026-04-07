@@ -79,6 +79,128 @@ export interface TimeoutCheckinJobResult {
   scheduleId: string;
 }
 
+export type TrackMeStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | 'ESCALATED';
+
+export interface TrackMeLocationPayload {
+  latitude: number;
+  longitude: number;
+  altitude?: number;
+  accuracy?: number;
+  speed?: number;
+  heading?: number;
+  capturedAt?: string;
+}
+
+export interface CreateTrackMeSessionPayload {
+  startAt: string;
+  endAt: string;
+  interval: number;
+  location: TrackMeLocationPayload;
+}
+
+export interface TrackMeRealtimeData {
+  scheduleCheckinId?: string | null;
+  locationTrackingId?: string | null;
+  status: TrackMeStatus;
+  isLive: boolean;
+  intervalMinutes?: number | null;
+  startAt?: string;
+  endAt?: string | null;
+  nextRunAt?: string | null;
+  counts?: {
+    success: number;
+    failed: number;
+    pending: number;
+    missed: number;
+  };
+  source?:
+    | 'socket_connect_snapshot'
+    | 'track_me_created'
+    | 'next_run_scheduled'
+    | 'checkin_completed'
+    | 'checkin_failed'
+    | 'checkin_missed'
+    | 'track_me_ended'
+    | 'track_me_escalated'
+    | 'track_me_cancelled'
+    | string;
+}
+
+export interface TrackMeActiveResponse {
+  checkinId: string;
+  trackerId: string | null;
+  status: TrackMeStatus;
+  startAt: string;
+  endAt: string | null;
+  intervalMinutes: number | null;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  isLive: boolean;
+}
+
+export interface TrackMeStatsResponse {
+  totalScheduled: number;
+  totalCompleted: number;
+  success: number;
+  totalMissed: number;
+  totalPending: number;
+  totalFailed: number;
+  wrongPin: number;
+  timeout: number;
+  remainingScheduled: number;
+  expectedTotalUntilEnd?: number;
+}
+
+export interface TrackMeHistoryItem {
+  id: string;
+  scheduledAt: string;
+  status: 'SCHEDULED' | 'COMPLETED' | 'CANCELED' | 'MISSED' | 'TIMEOUT' | 'WRONG_PIN';
+  respondedAt: string | null;
+  attempts?: number;
+}
+
+export interface TrackMeStateResponse {
+  session: TrackMeActiveResponse;
+  stats: TrackMeStatsResponse;
+  history: TrackMeHistoryItem[];
+}
+
+export interface CreateTrackMeSessionResult {
+  checkin: {
+    id: string;
+    locationTrackerId?: string | null;
+    type: 'TRACK_ME';
+    status: TrackMeStatus;
+    startAt: string;
+    endAt?: string | null;
+    intervalMinutes?: number | null;
+    nextRunAt?: string | null;
+    lastRunAt?: string | null;
+    createdAt: string;
+    updatedAt: string;
+  };
+  trackerId: string;
+}
+
+export interface EndTrackMeSessionPayload {
+  isSafe: boolean;
+  passcode: string;
+}
+
+export interface EndTrackMeSessionResult {
+  checkin: {
+    id: string;
+    status: 'COMPLETED' | 'ESCALATED';
+    locationTrackerId?: string | null;
+    type: 'TRACK_ME';
+    updatedAt: string;
+    [key: string]: unknown;
+  };
+  trackerId?: string | null;
+  trackerStatus?: 'COMPLETED' | 'ESCALATED';
+  isSafe: boolean;
+}
+
 export interface CommandResponse<T> {
   status: number;
   message: string;
@@ -133,4 +255,52 @@ export const timeoutCheckinJob = async (
     input,
   ) as CommandResponse<TimeoutCheckinJobResult>;
   return res.data;
+};
+
+export const createTrackMeSession = async (
+  input: CreateTrackMeSessionPayload,
+): Promise<CreateTrackMeSessionResult> => {
+  const res = await post('/schedule-checkin/track-me', input) as CommandResponse<CreateTrackMeSessionResult>;
+  return res.data;
+};
+
+export const endTrackMeSession = async (
+  checkinId: string,
+  input: EndTrackMeSessionPayload,
+): Promise<EndTrackMeSessionResult> => {
+  const res = await post(
+    `/schedule-checkin/track-me/${encodeURIComponent(checkinId)}/end`,
+    input,
+  ) as CommandResponse<EndTrackMeSessionResult>;
+  return res.data;
+};
+
+export const getActiveTrackMeSession = async (): Promise<TrackMeActiveResponse | null> => {
+  return get('/schedule-checkin/track-me/active') as Promise<TrackMeActiveResponse | null>;
+};
+
+export const getTrackMeStats = async (
+  checkinId: string,
+): Promise<TrackMeStatsResponse> => {
+  return get(`/schedule-checkin/track-me/${encodeURIComponent(checkinId)}/stats`) as Promise<TrackMeStatsResponse>;
+};
+
+export const getTrackMeHistory = async (
+  checkinId: string,
+  limit = 50,
+): Promise<TrackMeHistoryItem[]> => {
+  const safeLimit = Math.max(1, Math.min(200, limit));
+  return get(
+    `/schedule-checkin/track-me/${encodeURIComponent(checkinId)}/history?limit=${safeLimit}`,
+  ) as Promise<TrackMeHistoryItem[]>;
+};
+
+export const getTrackMeState = async (
+  checkinId: string,
+  historyLimit = 20,
+): Promise<TrackMeStateResponse> => {
+  const safeHistoryLimit = Math.max(1, Math.min(200, historyLimit));
+  return get(
+    `/schedule-checkin/track-me/${encodeURIComponent(checkinId)}/state?historyLimit=${safeHistoryLimit}`,
+  ) as Promise<TrackMeStateResponse>;
 };

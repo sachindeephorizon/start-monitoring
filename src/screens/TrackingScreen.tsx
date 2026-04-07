@@ -12,12 +12,12 @@ import {
   Alert,
   Linking,
   ActivityIndicator,
-  Platform,
   ScrollView,
   StyleSheet,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { WebView } from 'react-native-webview';
+import Svg, { Circle } from 'react-native-svg';
 import * as Location from 'expo-location';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
@@ -50,6 +50,46 @@ const LazyMapView: React.FC<{
 });
 LazyMapView.displayName = 'LazyMapView';
 
+const CircularProgress: React.FC<{ percent: number; label: string }> = ({ percent, label }) => {
+  const size = 96;
+  const stroke = 8;
+  const radius = (size - stroke) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const clamped = Math.max(0, Math.min(100, percent));
+  const offset = circumference - (clamped / 100) * circumference;
+
+  return (
+    <View style={{ width: size, height: size, justifyContent: 'center', alignItems: 'center' }}>
+      <Svg width={size} height={size}>
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#e9edf1"
+          strokeWidth={stroke}
+          fill="none"
+        />
+        <Circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#2C3E50"
+          strokeWidth={stroke}
+          fill="none"
+          strokeLinecap="round"
+          strokeDasharray={`${circumference} ${circumference}`}
+          strokeDashoffset={offset}
+          transform={`rotate(-90 ${size / 2} ${size / 2})`}
+        />
+      </Svg>
+      <View style={{ position: 'absolute', alignItems: 'center' }}>
+        <Text style={{ fontSize: 12, color: '#7f8c8d', fontWeight: '600' }}>{label}</Text>
+        <Text style={{ fontSize: 13, color: '#2C3E50', fontWeight: '700' }}>{Math.round(clamped)}%</Text>
+      </View>
+    </View>
+  );
+};
+
 export default function TrackingScreen() {
   const navigation = useNavigation();
   const tracking = useTrackingSession();
@@ -79,9 +119,9 @@ export default function TrackingScreen() {
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
 
-  const [showPasskeyModal, setShowPasskeyModal] = useState(false);
-  const [passkey, setPasskey] = useState('');
-  const [isValidatingPasskey, setIsValidatingPasskey] = useState(false);
+  const [showEndTrackingPasskeyModal, setShowEndTrackingPasskeyModal] = useState(false);
+  const [endTrackingPasskey, setEndTrackingPasskey] = useState('');
+  const [isEndingTracking, setIsEndingTracking] = useState(false);
 
   // Check subscription access on mount
   useEffect(() => {
@@ -120,55 +160,46 @@ export default function TrackingScreen() {
     return () => setShowMap(false);
   }, []);
 
-  // Sync passkey modal with tracking hook
-  useEffect(() => {
-    if (tracking.showPasskeyModal && !showPasskeyModal) {
-      setShowPasskeyModal(true);
-      setPasskey('');
-    } else if (!tracking.showPasskeyModal && showPasskeyModal) {
-      setShowPasskeyModal(false);
-      setPasskey('');
-    }
-  }, [tracking.showPasskeyModal, showPasskeyModal]);
+  const getCurrentLocation = useCallback(async (
+    options: { showError?: boolean; requestPermission?: boolean } = {},
+  ): Promise<Location.LocationObject | null> => {
+    const { showError = false, requestPermission = false } = options;
 
-  const getCurrentLocation = useCallback(async (showError = false) => {
     try {
       setIsGettingLocation(true);
 
       if (!locationPermission) {
+        if (!requestPermission) {
+          if (showError) {
+            Alert.alert(
+              'Location Permission Required',
+              'Start Track Me to grant location access for this session.',
+              [
+                { text: 'OK' },
+                { text: 'Settings', onPress: () => Linking.openSettings() },
+              ]
+            );
+          }
+
+          return null;
+        }
+
         const { status } = await Location.requestForegroundPermissionsAsync();
         if (status !== 'granted') {
           if (showError) {
             Alert.alert(
-              'Location Permission Required',
-              'This app needs location access to show your current position. Would you like to grant permission?',
+              'Permission Denied',
+              'Track Me requires location permission. Please enable location access in your device settings.',
               [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Continue',
-                  onPress: async () => {
-                    const { status: newStatus } = await Location.requestForegroundPermissionsAsync();
-                    if (newStatus === 'granted') {
-                      setLocationPermission(true);
-                      getCurrentLocation(true);
-                    } else {
-                      Alert.alert(
-                        'Permission Denied',
-                        'You can enable location access later in your device settings.',
-                        [
-                          { text: 'OK' },
-                          { text: 'Settings', onPress: () => Linking.openSettings() }
-                        ]
-                      );
-                    }
-                  }
-                }
+                { text: 'OK' },
+                { text: 'Settings', onPress: () => Linking.openSettings() },
               ]
             );
           }
-          setIsGettingLocation(false);
-          return;
+
+          return null;
         }
+
         setLocationPermission(true);
       }
 
@@ -176,15 +207,23 @@ export default function TrackingScreen() {
         accuracy: Location.Accuracy.High,
       });
       setCurrentLocation(location);
+      return location;
     } catch (error) {
       console.error('[TrackingScreen] Error getting location:', error);
       if (showError) {
         Alert.alert('Error', 'Failed to get your current location. Please try again.');
       }
+      return null;
     } finally {
       setIsGettingLocation(false);
     }
   }, [locationPermission]);
+
+  useEffect(() => {
+    if (locationPermission && !currentLocation && !isGettingLocation) {
+      getCurrentLocation({ showError: false, requestPermission: false }).catch(() => { });
+    }
+  }, [locationPermission, currentLocation, isGettingLocation, getCurrentLocation]);
 
   const formatTime = useCallback((time: CheckInTime): string => {
     return `${time.hours}:${String(time.minutes).padStart(2, '0')} ${time.period}`;
@@ -284,7 +323,29 @@ export default function TrackingScreen() {
         return;
       }
 
-      const success = await tracking.createSession(startTime, endTime, trackingInterval as TrackingIntervalValue);
+      const initialLocation = await getCurrentLocation({ showError: true, requestPermission: true });
+      if (!initialLocation) {
+        Alert.alert(
+          'Location Required',
+          'Track Me only works when location permission is granted and your current location is available.'
+        );
+        return;
+      }
+
+      const success = await tracking.createSession(
+        startTime,
+        endTime,
+        trackingInterval as TrackingIntervalValue,
+        {
+          latitude: initialLocation.coords.latitude,
+          longitude: initialLocation.coords.longitude,
+          altitude: typeof initialLocation.coords.altitude === 'number' ? initialLocation.coords.altitude : undefined,
+          accuracy: typeof initialLocation.coords.accuracy === 'number' ? initialLocation.coords.accuracy : undefined,
+          speed: typeof initialLocation.coords.speed === 'number' ? initialLocation.coords.speed : undefined,
+          heading: typeof initialLocation.coords.heading === 'number' ? initialLocation.coords.heading : undefined,
+          capturedAt: new Date(initialLocation.timestamp || Date.now()).toISOString(),
+        },
+      );
 
       if (success) {
         Alert.alert(
@@ -292,27 +353,6 @@ export default function TrackingScreen() {
           `Security tracking is now active from ${formatTime(fromTime)} to ${formatTime(toTime)} with passkey check-ins every ${trackingInterval} minutes.`,
           [{ text: 'OK' }]
         );
-        (async () => {
-          try {
-            const timeoutPromise = new Promise<never>((_, reject) =>
-              setTimeout(() => reject(new Error('Location timeout')), 5000)
-            );
-            const locationPromise = (async () => {
-              const { status } = await Location.getForegroundPermissionsAsync();
-              if (status !== 'granted') {
-                const { status: newStatus } = await Location.requestForegroundPermissionsAsync();
-                if (newStatus !== 'granted') return;
-              }
-              const location = await Location.getCurrentPositionAsync({
-                accuracy: Location.Accuracy.High,
-              });
-              setCurrentLocation(location);
-            })();
-            await Promise.race([locationPromise, timeoutPromise]);
-          } catch (error) {
-            console.warn('[TrackingScreen] Initial location fetch failed (non-blocking):', error);
-          }
-        })();
       } else {
         Alert.alert('Error', 'Failed to start tracking session. Please try again.');
       }
@@ -320,63 +360,49 @@ export default function TrackingScreen() {
       console.error('[TrackingScreen] Exception while starting tracking:', error);
       Alert.alert('Error', 'An unexpected error occurred. Please try again.');
     }
-  }, [tracking, trackingDateLabel, trackingDateValue, fromTime, toTime, trackingInterval, applyTimeToDateLocal, formatTime]);
+  }, [tracking, trackingDateLabel, trackingDateValue, fromTime, toTime, trackingInterval, applyTimeToDateLocal, formatTime, getCurrentLocation]);
 
   const handleStopTrackingSession = useCallback(async () => {
-    Alert.alert(
-      'Stop Tracking',
-      'Are you sure you want to stop the security tracking session?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Stop',
-          style: 'destructive',
-          onPress: async () => {
-            const success = await tracking.completeTrackingSession();
-            if (success) {
-              Alert.alert(
-                'Tracking Stopped',
-                'Security tracking has been stopped.',
-                [{ text: 'OK', onPress: () => navigation.goBack() }]
-              );
-            } else {
-              Alert.alert('Error', 'Failed to stop tracking session. Please try again.');
-            }
-          },
-        },
-      ]
-    );
-  }, [tracking, navigation]);
+    setEndTrackingPasskey('');
+    setShowEndTrackingPasskeyModal(true);
+  }, []);
 
-  const handlePasskeySubmit = useCallback(async () => {
-    if (isValidatingPasskey || passkey.length !== 4) return;
+  const handleEndTrackingWithPasskey = useCallback(async () => {
+    if (isEndingTracking || endTrackingPasskey.length !== 4) {
+      return;
+    }
 
-    setIsValidatingPasskey(true);
+    setIsEndingTracking(true);
 
     try {
-      const { validatePasskey } = await import('@/services/trackingService');
-      const isValid = await validatePasskey(passkey);
+      const success = await tracking.completeTrackingSession({
+        passcode: endTrackingPasskey,
+        isSafe: true,
+      });
 
-      if (isValid) {
-        await tracking.onPasskeySuccess();
-        setPasskey('');
+      if (success) {
+        setShowEndTrackingPasskeyModal(false);
+        setEndTrackingPasskey('');
+        Alert.alert(
+          'Tracking Stopped',
+          'Security tracking has been stopped.',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
       } else {
-        await tracking.onPasskeyFailure();
-        setPasskey('');
-        Alert.alert('Incorrect Passkey', 'The passkey you entered is incorrect.');
+        Alert.alert('Error', 'Failed to stop tracking session. Please verify your passkey and try again.');
       }
-    } catch (error) {
-      console.error('[TrackingScreen] Error validating passkey:', error);
-      await tracking.onPasskeyFailure();
-      setPasskey('');
-      Alert.alert('Error', 'Failed to validate passkey. Please try again.');
     } finally {
-      setIsValidatingPasskey(false);
+      setIsEndingTracking(false);
     }
-  }, [passkey, isValidatingPasskey, tracking]);
+  }, [isEndingTracking, endTrackingPasskey, tracking, navigation]);
 
   const nextCheckIn = tracking.nextTrackingCheckIn;
   const countdown = tracking.trackingCountdown;
+  const activeIntervalMin = tracking.session?.checkin_interval_minutes ?? trackingInterval;
+  const activeIntervalMs = activeIntervalMin * 60 * 1000;
+  const checkinProgressPercent = nextCheckIn
+    ? (((activeIntervalMs - (nextCheckIn.getTime() - Date.now())) / activeIntervalMs) * 100)
+    : 0;
 
   return (
     <SafeAreaView style={screenStyles.container} edges={['top', 'bottom']}>
@@ -516,10 +542,22 @@ export default function TrackingScreen() {
                 </Text>
               )}
               <Text style={[trackingStyles.statusText, { fontSize: 14 }]}>
-                Total: {tracking.trackingStats.success + tracking.trackingStats.failed} |
-                ✅ Successful: {tracking.trackingStats.success} |
-                ❌ Failed: {tracking.trackingStats.failed}
+                <MaterialIcons name="event-note" size={14} color="#2C3E50" /> Scheduled: {tracking.trackingStats.totalScheduled}
               </Text>
+              <Text style={[trackingStyles.statusText, { fontSize: 14 }]}> 
+                <MaterialIcons name="check-circle" size={14} color="#27ae60" /> Completed: {tracking.trackingStats.success}
+              </Text>
+              <Text style={[trackingStyles.statusText, { fontSize: 14 }]}> 
+                <MaterialIcons name="cancel" size={14} color="#e74c3c" /> Failed: {tracking.trackingStats.totalFailed}
+              </Text>
+              <Text style={[trackingStyles.statusText, { fontSize: 14 }]}> 
+                <MaterialIcons name="pending-actions" size={14} color="#f39c12" /> Remaining: {tracking.trackingStats.remainingScheduled}
+              </Text>
+              {typeof tracking.trackingStats.expectedTotalUntilEnd === 'number' && (
+                <Text style={[trackingStyles.statusText, { fontSize: 14 }]}> 
+                  <MaterialIcons name="timeline" size={14} color="#2C3E50" /> Expected until end: {tracking.trackingStats.expectedTotalUntilEnd}
+                </Text>
+              )}
             </View>
           </View>
         )}
@@ -569,18 +607,12 @@ export default function TrackingScreen() {
               </View>
             </View>
             <Text style={trackingStyles.trackingDescription}>
-              Security agents will request check-ins every {tracking.session?.checkin_interval_minutes ?? trackingInterval} minutes while tracking is active
+              Security agents will request check-ins every {tracking.session?.checkin_interval_minutes ?? trackingInterval} minutes while tracking is active.
             </Text>
             <View style={trackingStyles.nextCheckInContainer}>
               <Text style={trackingStyles.nextCheckInLabel}>Next check-in in:</Text>
               <Text style={trackingStyles.countdownTimer}>{countdown}</Text>
-              {nextCheckIn && (
-                <View style={trackingStyles.progressBar}>
-                  <View style={[trackingStyles.progressFill, {
-                    width: `${Math.max(0, Math.min(100, (((tracking.session?.checkin_interval_minutes ?? trackingInterval) * 60 * 1000) - (nextCheckIn.getTime() - Date.now())) / ((tracking.session?.checkin_interval_minutes ?? trackingInterval) * 60 * 1000) * 100))}%`
-                  }]} />
-                </View>
-              )}
+              <CircularProgress percent={checkinProgressPercent} label="Cycle" />
             </View>
           </View>
         )}
@@ -592,7 +624,7 @@ export default function TrackingScreen() {
             <Text style={trackingStyles.locationCardTitle}>Current Location</Text>
             <TouchableOpacity
               style={trackingStyles.refreshLocationButton}
-              onPress={() => getCurrentLocation(true)}
+              onPress={() => getCurrentLocation({ showError: true, requestPermission: false })}
               disabled={isGettingLocation}
             >
               <MaterialIcons name="refresh" size={16} color="#2C3E50" />
@@ -634,11 +666,11 @@ export default function TrackingScreen() {
           ) : (
             <TouchableOpacity
               style={trackingStyles.mapPlaceholder}
-              onPress={() => getCurrentLocation(true)}
+              onPress={() => getCurrentLocation({ showError: true, requestPermission: false })}
             >
               <MaterialIcons name="place" size={48} color="#2C3E50" />
               <Text style={trackingStyles.mapViewText}>
-                {locationPermission ? 'Tap to get location' : 'Grant location permission'}
+                {locationPermission ? 'Tap to get location' : 'Tap Start Tracking to grant location permission'}
               </Text>
             </TouchableOpacity>
           )}
@@ -669,14 +701,17 @@ export default function TrackingScreen() {
                     </View>
                     <View style={[trackingStyles.respondedBadge, {
                       backgroundColor: checkIn.status === 'success' ? 'rgba(39, 174, 96, 0.1)' :
+                        checkIn.status === 'failed' ? 'rgba(231, 76, 60, 0.1)' :
                         checkIn.status === 'missed' ? 'rgba(231, 76, 60, 0.1)' : 'rgba(243, 156, 18, 0.1)'
                     }]}>
                       <Text style={[trackingStyles.respondedText, {
                         color: checkIn.status === 'success' ? '#27ae60' :
+                          checkIn.status === 'failed' ? '#e74c3c' :
                           checkIn.status === 'missed' ? '#e74c3c' : '#f39c12'
                       }]}>
                         {checkIn.status === 'success' ? 'Responded' :
-                          checkIn.status === 'missed' ? 'Missed' : 'Pending'}
+                          checkIn.status === 'failed' ? 'Failed' :
+                            checkIn.status === 'missed' ? 'Missed' : 'Pending'}
                       </Text>
                     </View>
                   </View>
@@ -731,21 +766,23 @@ export default function TrackingScreen() {
         />
       )}
 
-      {/* Passkey Modal */}
-      {showPasskeyModal && (
+      {showEndTrackingPasskeyModal && (
         <EmergencyPasskeyModal
           visible={true}
-          onSubmit={handlePasskeySubmit}
-          title="Security Check-In"
-          subtitle="Enter passkey to verify"
-          icon="security"
+          onSubmit={handleEndTrackingWithPasskey}
+          title="End Tracking"
+          subtitle="Enter passkey to stop this active Track Me session"
+          icon="lock"
           iconColor="#2c3e50"
           isEmergency={false}
-          emergencyCountdown={tracking.passkeyTimeLeft}
-          emergencyDeadlineMs={tracking.passkeyTimeLeft ? Date.now() + tracking.passkeyTimeLeft * 1000 : undefined}
-          enteredPasskey={passkey}
-          onPasskeyChange={setPasskey}
-          isLoading={isValidatingPasskey}
+          enteredPasskey={endTrackingPasskey}
+          onPasskeyChange={setEndTrackingPasskey}
+          isLoading={isEndingTracking}
+          onClose={() => {
+            if (isEndingTracking) return;
+            setShowEndTrackingPasskeyModal(false);
+            setEndTrackingPasskey('');
+          }}
         />
       )}
     </SafeAreaView>

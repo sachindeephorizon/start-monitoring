@@ -47,6 +47,7 @@ import { AppStateProvider } from '@/context/AppStateContext';
 import { setupNotificationHandlers, setupNotificationChannels } from '@/core/notifications';
 import { useNotificationRouting, usePushNotifications } from '@/core/notifications';
 import { useLiveLocationPublisher } from '@/core/location/useLiveLocationPublisher';
+import { useTrackMeForegroundSync } from '@/core/location/useTrackMeForegroundSync';
 import { InAppAlertBanner, InAppAlertBridge } from '@/core/in-app-alerts';
 
 // iOS In-App Purchase
@@ -73,6 +74,11 @@ function NotificationSetup() {
 
 function LiveLocationSetup() {
   useLiveLocationPublisher();
+  return null;
+}
+
+function TrackMeForegroundSyncSetup() {
+  useTrackMeForegroundSync();
   return null;
 }
 
@@ -150,6 +156,7 @@ export default function App() {
           <AuthProvider>
             <NotificationSetup />
             <LiveLocationSetup />
+            <TrackMeForegroundSyncSetup />
             <InAppAlertSetup />
             <NativeSplashGate>
               <BootGuard>
