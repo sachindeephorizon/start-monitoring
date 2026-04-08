@@ -31,6 +31,7 @@ import BookBodyguardScreen from '@/screens/BookBodyguardScreen';
 import VideoMonitorScreen from '@/screens/VideoMonitorScreen';
 import AudioCallScreen from '@/screens/AudioCallScreen';
 import CheckInPasskeyHost from '@/components/checkin/CheckInPasskeyHost';
+import { EmergencyFlowProvider } from '@/features/emergency/emergency.flow';
 
 const Stack = createStackNavigator();
 
@@ -50,7 +51,7 @@ export type MainStackParamList = {
   Tracking: undefined;
   ScheduleCheckIn: undefined;
   BookBodyguard: undefined;
-  VideoMonitor: { callId?: string; userName?: string; autoStart?: boolean; agentId?: string } | undefined;
+  VideoMonitor: { callId?: string; callToken?: string; userName?: string; autoStart?: boolean; agentId?: string } | undefined;
   AudioCall: { callId?: string; userName?: string; agentId?: string } | undefined;
   // TODO: Add these when screens are implemented
   // VideoCall: { sessionId: string; roomCode: string };
@@ -96,7 +97,7 @@ export function MainNavigator() {
   }, []);
 
   return (
-    <>
+    <EmergencyFlowProvider>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,
@@ -139,7 +140,7 @@ export function MainNavigator() {
       </Stack.Navigator>
 
       <CheckInPasskeyHost />
-    </>
+    </EmergencyFlowProvider>
   );
 }
 

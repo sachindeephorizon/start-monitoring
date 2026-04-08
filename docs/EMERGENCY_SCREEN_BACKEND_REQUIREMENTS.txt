@@ -1,0 +1,158 @@
+Emergency Screen Backend Requirements
+Date: 2026-04-08
+
+Goal
+Enable the Emergency screen to reliably:
+1) Open/resume emergency video call
+2) Resume/send emergency location points
+3) Disable (abort/cancel) active emergency from Emergency screen using passkey
+
+Auth
+- All endpoints require Bearer JWT.
+- User can only access their own emergency session.
+
+Base Route
+- /v1/emergency
+
+-----------------------------------------------------------------
+1) Fetch Active Emergency Context (for Emergency screen resume)
+-----------------------------------------------------------------
+Method:
+- GET /v1/emergency/active
+
+Purpose:
+- Emergency screen can be opened from push/restart without local memory.
+- Frontend needs call + tracking context to continue emergency flow.
+
+Success response shape:
+{
+  "status": 200,
+  "message": "Active emergency fetched",
+  "data": {
+    "emergencyId": "string",
+    "status": "ACTIVE",
+    "callId": "string",
+    "callToken": "string",
+    "trackingId": "string",
+    "triggerWindowSec": 10,
+    "triggeredAt": "ISO_STRING"
+  }
+}
+
+Notes:
+- callToken should be freshly generated (or guaranteed valid) for join.
+- trackingId is mandatory here so location tracker can continue from Emergency screen.
+
+No active emergency response:
+{
+  "status": 404,
+  "message": "No active emergency",
+  "data": null
+}
+
+-----------------------------------------------------------------
+2) Optional: Fetch by Emergency Id (if opened with route param)
+-----------------------------------------------------------------
+Method:
+- GET /v1/emergency/:emergencyId/context
+
+Success response shape:
+{
+  "status": 200,
+  "message": "Emergency context fetched",
+  "data": {
+    "emergencyId": "string",
+    "status": "ACTIVE" | "RESOLVED" | "CANCELLED" | "ESCALATED",
+    "callId": "string|null",
+    "callToken": "string|null",
+    "trackingId": "string|null",
+    "triggerWindowSec": 10,
+    "triggeredAt": "ISO_STRING"
+  }
+}
+
+Notes:
+- If status is ACTIVE, callId/callToken/trackingId should be present.
+
+-----------------------------------------------------------------
+3) Disable Emergency from Emergency Screen (passkey protected)
+-----------------------------------------------------------------
+Method:
+- POST /v1/emergency/:emergencyId/disable
+
+Request body:
+{
+  "passkey": "string"
+}
+
+Behavior:
+- Validate passkey against user's emergency passkey.
+- Allow only when emergency is ACTIVE and within allowed disable window (if policy applies).
+- On success:
+  - emergency status -> CANCELLED
+  - linked location tracker status -> CANCELLED
+
+Success response shape:
+{
+  "status": 200,
+  "message": "Emergency disabled",
+  "data": {
+    "id": "string",
+    "userId": "string",
+    "callSessionId": "string|null",
+    "locationTrackerId": "string|null",
+    "status": "CANCELLED",
+    "triggerWindowSec": 10,
+    "resolvedByAgentId": null,
+    "resolutionNote": null,
+    "triggeredAt": "ISO_STRING",
+    "resolvedAt": null,
+    "cancelledAt": "ISO_STRING",
+    "createdAt": "ISO_STRING",
+    "updatedAt": "ISO_STRING"
+  }
+}
+
+Failure expectations:
+- Wrong passkey -> clear error message
+- Window expired -> clear error message
+- Not active / not found -> clear error message
+
+-----------------------------------------------------------------
+4) Location Tracker Continuation from Emergency Screen
+-----------------------------------------------------------------
+Required from backend context responses:
+- trackingId (string, required while ACTIVE)
+
+Frontend usage:
+- Continue posting points to:
+  POST /v1/location-tracker/:trackerId/points
+- trackerId = trackingId from emergency context endpoint
+
+-----------------------------------------------------------------
+5) Strongly Recommended Response Contract
+-----------------------------------------------------------------
+Use standard wrapper for all responses:
+{
+  "status": number,
+  "message": string,
+  "data": any
+}
+
+-----------------------------------------------------------------
+6) Frontend Dependency Summary (must be present for Emergency screen)
+-----------------------------------------------------------------
+Required fields to render Open Emergency Call + tracking continuation:
+- emergencyId
+- status
+- callId
+- callToken
+- trackingId
+- triggerWindowSec
+- triggeredAt
+
+Without callId/callToken:
+- Open Emergency Call button cannot reliably join call.
+
+Without trackingId:
+- Emergency screen cannot continue location tracking updates.
