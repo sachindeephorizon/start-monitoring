@@ -42,6 +42,7 @@ import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
 import { consumePendingNotificationNav } from '@/core/notifications/notification.router';
 import { Service } from '@/types/services';
 import { getMyThreads } from '@/api/chat';
+import { getActiveTrackMeSession, getTrackMeState } from '@/api/schedule-checking';
 import { chatSocketService, NotificationEnvelope } from '@/realtime/core';
 import SecurityAgentContactCard from '@/components/home/SecurityAgentContactCard';
 
@@ -96,8 +97,11 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const [isStartingCall, setIsStartingCall] = useState(false);
   const [cameraPermission, setCameraPermission] = useState(false);
   const [hasActiveChatBadge, setHasActiveChatBadge] = useState(false);
-  const hasActiveScheduleCheckIn = checkIn.scheduledCheckIns.length > 0;
+  const [hasActiveTrackMeSession, setHasActiveTrackMeSession] = useState(false);
+  const [trackMeBadgeLabel, setTrackMeBadgeLabel] = useState<'Active' | 'End Session'>('Active');
+  const hasActiveScheduleCheckIn = checkIn.scheduledCheckIns.some((item) => item.type === 'SCHEDULE_CHECKIN');
   const activeScheduleBlinkOpacity = useRef(new Animated.Value(1)).current;
+  const activeTrackMeBlinkOpacity = useRef(new Animated.Value(1)).current;
   
   // Siren hook - flashlight control callback (simplified for now)
   const handleFlashlightControl = useCallback((enabled: boolean) => {
@@ -216,10 +220,39 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     }
   }, []);
 
+  const refreshTrackMeBadge = useCallback(async () => {
+    try {
+      const active = await getActiveTrackMeSession();
+      if (!active?.isLive) {
+        setHasActiveTrackMeSession(false);
+        setTrackMeBadgeLabel('Active');
+        return;
+      }
+
+      setHasActiveTrackMeSession(true);
+
+      try {
+        const state = await getTrackMeState(active.checkinId, 1);
+        const shouldEnd = state.stats.remainingScheduled <= 0;
+        setTrackMeBadgeLabel(shouldEnd ? 'End Session' : 'Active');
+      } catch {
+        // Keep existing label if state fetch fails.
+      }
+    } catch (error) {
+      console.warn('[HomeScreen] Failed to refresh Track Me badge state:', error);
+    }
+  }, []);
+
   useFocusEffect(
     useCallback(() => {
       void refreshChatBadge();
     }, [refreshChatBadge])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      void refreshTrackMeBadge();
+    }, [refreshTrackMeBadge])
   );
 
   useEffect(() => {
@@ -243,6 +276,11 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
 
       if (eventName === 'chat.thread.resolved' || eventName === 'chat.thread.assigned') {
         void refreshChatBadge();
+        return;
+      }
+
+      if (eventName === 'track_me') {
+        void refreshTrackMeBadge();
       }
     };
 
@@ -251,7 +289,43 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     return () => {
       chatSocketService.offNotification(notificationHandler);
     };
-  }, [auth.isAuthReady, auth.user?.id, refreshChatBadge]);
+  }, [auth.isAuthReady, auth.user?.id, refreshChatBadge, refreshTrackMeBadge]);
+
+  useEffect(() => {
+    if (!auth.isAuthReady || !auth.user?.id) return;
+    void refreshTrackMeBadge();
+  }, [auth.isAuthReady, auth.user?.id, refreshTrackMeBadge]);
+
+  useEffect(() => {
+    if (!hasActiveTrackMeSession) {
+      activeTrackMeBlinkOpacity.stopAnimation();
+      activeTrackMeBlinkOpacity.setValue(1);
+      return;
+    }
+
+    const blink = Animated.loop(
+      Animated.sequence([
+        Animated.timing(activeTrackMeBlinkOpacity, {
+          toValue: 0.2,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+        Animated.timing(activeTrackMeBlinkOpacity, {
+          toValue: 1,
+          duration: 500,
+          useNativeDriver: true,
+        }),
+      ])
+    );
+
+    blink.start();
+
+    return () => {
+      blink.stop();
+      activeTrackMeBlinkOpacity.stopAnimation();
+      activeTrackMeBlinkOpacity.setValue(1);
+    };
+  }, [hasActiveTrackMeSession, activeTrackMeBlinkOpacity]);
 
   useEffect(() => {
     if (!hasActiveScheduleCheckIn) {
@@ -1015,7 +1089,23 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
             >
               <MaterialIcons name="my-location" size={32} color="#2C3E50" />
               <Text style={serviceCardStyles.serviceTitle}>Track Me On The Go</Text>
-              <Text style={serviceCardStyles.serviceSubtitle}>Real-time location sharing</Text>
+              <View style={{ flexDirection: 'column', alignItems: 'center' }}>
+                <Text style={serviceCardStyles.serviceSubtitle}>Real-time location sharing</Text>
+                {hasActiveTrackMeSession && (
+                  <Animated.Text
+                    style={{
+                      marginLeft: 4,
+                      color: trackMeBadgeLabel === 'End Session' ? '#E67E22' : '#1FA35B',
+                      fontSize: 12,
+                      fontWeight: '700',
+                      opacity: activeTrackMeBlinkOpacity,
+                      marginTop: 4,
+                    }}
+                  >
+                    {trackMeBadgeLabel}
+                  </Animated.Text>
+                )}
+              </View>
             </TouchableOpacity>
           </View>
           <View style={serviceCardStyles.servicesGridRow}>

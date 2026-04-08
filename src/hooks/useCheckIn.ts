@@ -144,6 +144,7 @@ interface ScheduledCheckInItem {
   notes?: string;
   frequency: UiCheckInFrequency;
   status: CheckinStatus;
+  type: 'TRACK_ME' | 'SCHEDULE_CHECKIN';
   gracePeriodMinutes?: number | null;
 }
 
@@ -432,17 +433,25 @@ export function useCheckIn(options: UseCheckInOptions = {}): UseCheckInReturn {
       }
 
       const mappedSchedules: ScheduledCheckInItem[] = schedules
-        .map((schedule) => ({
-          id: schedule.id,
-          startAt: resolveScheduleDisplayAt(
-            schedule,
-            earliestScheduledJobByCheckinId.get(schedule.id),
-          ),
-          notes: schedule.remarks ?? undefined,
-          frequency: toUiFrequency(schedule.frequency),
-          status: schedule.status,
-          gracePeriodMinutes: schedule.gracePeriodMinutes,
-        }))
+        .map((schedule) => {
+          const scheduleType: ScheduledCheckInItem['type'] =
+            (schedule as ScheduleCheckInDto & { type?: string | null }).type === 'TRACK_ME'
+              ? 'TRACK_ME'
+              : 'SCHEDULE_CHECKIN';
+
+          return {
+            id: schedule.id,
+            startAt: resolveScheduleDisplayAt(
+              schedule,
+              earliestScheduledJobByCheckinId.get(schedule.id),
+            ),
+            notes: schedule.remarks ?? undefined,
+            frequency: toUiFrequency(schedule.frequency),
+            status: schedule.status,
+            type: scheduleType,
+            gracePeriodMinutes: schedule.gracePeriodMinutes,
+          };
+        })
         .sort((a, b) => new Date(a.startAt).getTime() - new Date(b.startAt).getTime());
       setScheduledCheckIns(mappedSchedules);
 
