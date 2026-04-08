@@ -16,12 +16,11 @@ import {
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import { supabase } from '@/lib/supabase';
-import { TABLES } from '@/lib/supabase';
+import { getUserProfile } from '@/api/auth';
 import { SubscriptionService } from '@/features/subscription/subscription.service';
 import type { SubscriptionPlan } from '@/features/subscription/subscription.service';
 import { IOSPurchaseService } from '@/features/subscription/ios-purchase.service';
-import { AuthService } from '@/core/auth/auth.service';
+import { useCurrentUser } from '@/core/auth';
 import { PaymentModal } from '@/components/modals/PaymentModal';
 import { UserInfoModal } from '@/components/modals/UserInfoModal';
 import { useSubscription } from '@/hooks/useSubscription';
@@ -32,20 +31,14 @@ import { presentSubscriptionStoreViewWithGroupID } from '@/features/subscription
 
 interface SubscriptionPlansScreenProps {
   navigation?: any;
-  onSelectPlan?: (plan: SubscriptionPlan) => void;
   onBack?: () => void;
   selectedPlanId?: string | null; // Plan ID that was selected before signup
-  isAuthenticated?: boolean;
-  onRequestLogin?: () => void;
 }
 
 const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
   navigation,
-  onSelectPlan,
   onBack,
   selectedPlanId,
-  isAuthenticated,
-  onRequestLogin,
 }) => {
   const insets = useSafeAreaInsets();
   const [selectedPlan, setSelectedPlan] = useState<SubscriptionPlan | null>(null);
@@ -55,7 +48,6 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
   const [showUserInfoModal, setShowUserInfoModal] = useState(false);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
   const [paymentUrl, setPaymentUrl] = useState<string | null>(null);
-  const [localAuthState, setLocalAuthState] = useState<boolean | null>(null);
   const [couponCode, setCouponCode] = useState<string>('');
   const [showCouponInput, setShowCouponInput] = useState<boolean>(false);
   const [showPaymentSuccessModal, setShowPaymentSuccessModal] = useState(false);
@@ -66,7 +58,10 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
     daysRemaining: number;
     trialEndDate: Date | null;
   } | null>(null);
+  const [plans, setPlans] = useState<SubscriptionPlan[]>(SubscriptionService.getPlans());
+  const [plansLoading, setPlansLoading] = useState<boolean>(false);
   const iosMajorVersion = Platform.OS === 'ios' ? parseInt(String(Platform.Version), 10) : 0;
+  const currentUser = useCurrentUser();
 
   // Get subscription refresh function
   const { refresh: refreshSubscription, subscription } = useSubscription();
@@ -78,8 +73,29 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
   const statusBarHeight = Platform.OS === 'ios' ? 44 : (StatusBar.currentHeight || 0);
   const headerTopPadding = Platform.OS === 'ios' ? statusBarHeight : statusBarHeight + 8;
   
-  const plans = SubscriptionService.getPlans();
-  const guestMode = isAuthenticated === false || (typeof isAuthenticated === 'undefined' && localAuthState === false);
+  React.useEffect(() => {
+    let mounted = true;
+    const loadPlans = async () => {
+      setPlansLoading(true);
+      try {
+        const fetchedPlans = await SubscriptionService.fetchPlans();
+        if (mounted) {
+          setPlans(fetchedPlans);
+        }
+      } catch (error) {
+        console.warn('⚠️ Failed to load plans from backend:', error);
+      } finally {
+        if (mounted) {
+          setPlansLoading(false);
+        }
+      }
+    };
+
+    loadPlans();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   const showSuccessWhenActive = React.useCallback(() => {
     const pending = pendingSuccessRef.current;
@@ -101,41 +117,11 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
     return () => sub.remove();
   }, [showSuccessWhenActive]);
 
-  React.useEffect(() => {
-    let mounted = true;
-    if (typeof isAuthenticated === 'boolean') {
-      setLocalAuthState(isAuthenticated);
-      return () => {
-        mounted = false;
-      };
-    }
-
-    const checkAuth = async () => {
-      try {
-        const user = await AuthService.getCurrentUser();
-        if (mounted) {
-          setLocalAuthState(!!user);
-        }
-      } catch (error) {
-        console.warn('⚠️ Unable to determine auth state:', error);
-        if (mounted) {
-          setLocalAuthState(null);
-        }
-      }
-    };
-
-    checkAuth();
-
-    return () => {
-      mounted = false;
-    };
-  }, [isAuthenticated]);
-
   // Load trial status for authenticated users without subscription
   React.useEffect(() => {
     const loadTrialStatus = async () => {
-      // Only load trial status if user is authenticated and has no subscription
-      if (!guestMode && !subscription) {
+      // Only load trial status if user has no subscription
+      if (!subscription) {
         try {
           const status = await SubscriptionService.getTrialStatus();
           setTrialStatus({
@@ -153,12 +139,12 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
     };
 
     loadTrialStatus();
-  }, [guestMode, subscription]);
+  }, [subscription]);
 
   // Auto-select plan if coming from signup flow (Flow 2)
   React.useEffect(() => {
     if (selectedPlanId) {
-      const plan = SubscriptionService.getPlan(selectedPlanId);
+      const plan = plans.find((p) => p.id === selectedPlanId) || SubscriptionService.getPlan(selectedPlanId);
       if (plan) {
         console.log('📋 Plan pre-selected after signup:', plan.name, plan.id);
         setSelectedPlan(plan);
@@ -169,16 +155,14 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
           console.log('⏳ Waiting for auth state to update after signup...');
           await new Promise(resolve => setTimeout(resolve, 1200));
 
-          const user = await AuthService.getCurrentUser();
+          const user = currentUser;
 
           if (user) {
             // User is logged in after signup, proceed to payment automatically
             console.log('✅ User logged in after signup, initiating payment for:', plan.name);
             console.log('💳 User email:', user.email);
             await initiatePayment(plan, {
-              // Phone-auth users often have no Supabase auth email.
-              // We store the profile email in auth metadata as `profile_email`.
-              email: (user.profileEmail || user.email || '').trim(),
+              email: (user.email || '').trim(),
               name: user.name || 'User',
               phone: user.phone || '',
             });
@@ -195,7 +179,7 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [selectedPlanId]);
+  }, [selectedPlanId, plans, currentUser]);
 
   // Handle plan card tap - just selects the plan visually
   const handlePlanCardPress = (plan: SubscriptionPlan) => {
@@ -215,7 +199,7 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
       setLoading(true);
 
       console.log('🔐 Checking user authentication...');
-      const user = await AuthService.getCurrentUser();
+      const user = currentUser;
 
       console.log('👤 User status:', user ? 'Logged in' : 'Not logged in');
 
@@ -223,35 +207,14 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         // User is logged in → Go directly to payment (Flow 1 after signup)
         console.log('✅ User logged in, initiating payment...');
         await initiatePayment(plan, {
-          // Phone-auth users often have no Supabase auth email.
-          // We store the profile email in auth metadata as `profile_email`.
-          email: (user.profileEmail || user.email || '').trim(),
+          email: (user.email || '').trim(),
           name: user.name || 'User',
           phone: user.phone || '',
         });
       } else {
         setLoading(false);
-        // User not logged in → Redirect to signup first (Flow 2)
-        console.log('⚠️ User not logged in, redirecting to signup...');
-        if (onSelectPlan) {
-          onSelectPlan(plan);
-        }
-
-        if (onRequestLogin) {
-          Alert.alert(
-            'Login required',
-            'Please log in using the button below the plans to continue with your purchase.'
-          );
-          return;
-        }
-
-        if (onSelectPlan) {
-          return;
-        } else {
-          // If no callback, show user info modal for guest checkout
-          console.log('📝 Showing user info modal for guest checkout...');
-          setShowUserInfoModal(true);
-        }
+        Alert.alert('Login required', 'Please log in to continue with your purchase.');
+        return;
       }
     } catch (error: any) {
       console.error('❌ Error in handleSelectPlan:', error);
@@ -329,33 +292,27 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
       setSelectedPlan(plan);
       setLoading(true);
 
-      // Get current user (must be authenticated to attach subscription server-side)
-      const user = await AuthService.getCurrentUser();
-      const userId = user?.id || null;
-      if (!userId) {
+      // User must be authenticated before reaching this screen, but keep guard for resilience.
+      if (!currentUser?.id) {
         setLoading(false);
         Alert.alert('Login Required', 'Please log in to purchase a subscription.', [{ text: 'OK' }]);
         return;
       }
 
       // Fetch email from profile if not provided in userInfo
-      let finalEmail = userInfo.email?.trim() || user?.email?.trim() || '';
-      let finalName = userInfo.name?.trim() || user?.name?.trim() || '';
-      let finalPhone = userInfo.phone?.trim() || user?.phone?.trim() || '';
+      let finalEmail = userInfo.email?.trim() || currentUser?.email?.trim() || '';
+      let finalName = userInfo.name?.trim() || currentUser?.name?.trim() || '';
+      let finalPhone = userInfo.phone?.trim() || currentUser?.phone?.trim() || '';
 
-      // If still missing, fetch from mobile_users profile
-      if ((!finalEmail || !finalPhone) && userId) {
+      // If still missing, fetch from backend profile endpoint
+      if (!finalEmail || !finalPhone) {
         try {
-          const { data: profile } = await supabase
-            .from(TABLES.MOBILE_USERS)
-            .select('email, name, phone')
-            .eq('id', userId)
-            .single();
+          const profile = await getUserProfile();
 
           if (profile) {
-            finalEmail = finalEmail || profile.email || '';
-            finalName = finalName || profile.name || '';
-            finalPhone = finalPhone || profile.phone || '';
+            finalEmail = finalEmail || (profile as any).email || '';
+            finalName = finalName || (profile as any).name || '';
+            finalPhone = finalPhone || (profile as any).phone || '';
           }
         } catch (error) {
           console.warn('Could not fetch profile for payment prefill:', error);
@@ -409,6 +366,14 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
 
       // User cancelled or SDK reported cancellation
       if (result.error && (result.error.toLowerCase().includes('cancel') || result.error.toLowerCase().includes('cancelled'))) {
+        return;
+      }
+
+      if (result.error && result.error.toLowerCase().includes('activating')) {
+        Alert.alert(
+          'Activating Subscription',
+          'Your payment was received. We are activating your subscription now. Please wait a moment and pull to refresh if needed.'
+        );
         return;
       }
 
@@ -541,7 +506,7 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         </View>
 
         {/* Trial Status Banner - Show for authenticated users without subscription */}
-        {!guestMode && !subscription && trialStatus && (
+        {!subscription && trialStatus && (
           <View style={styles.trialBanner}>
             <MaterialIcons name="timer" size={24} color="#4BA8FF" />
             <View style={styles.trialBannerContent}>
@@ -617,7 +582,19 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         )}
 
         <View style={styles.plansContainer}>
-          {plans.map((plan, index) => renderPlanCard(plan, index))}
+          {plansLoading ? (
+            <View style={styles.plansLoadingContainer}>
+              <ActivityIndicator size="small" color="#4BA8FF" />
+              <Text style={styles.plansLoadingText}>Loading plans...</Text>
+            </View>
+          ) : plans.length > 0 ? (
+            plans.map((plan, index) => renderPlanCard(plan, index))
+          ) : (
+            <View style={styles.plansLoadingContainer}>
+              <MaterialIcons name="info-outline" size={20} color="#6B7280" />
+              <Text style={styles.plansLoadingText}>No plans available right now.</Text>
+            </View>
+          )}
         </View>
 
         {/* Required Links: Privacy Policy and Terms of Use (EULA) - App Store Requirement */}
@@ -667,86 +644,70 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         </View>
 
         {/* Subscribe Button - iOS 17.0+ uses native SubscriptionStoreView, others use custom flow */}
-        {!guestMode && (
-          <TouchableOpacity
-            style={[
-              styles.subscribeButton,
-              (loading || (Platform.OS !== 'ios' && !selectedPlan)) && styles.subscribeButtonDisabled
-            ]}
-            onPress={async () => {
-              // iOS 17.0+: Use Apple's native SubscriptionStoreView (includes all required info)
-              if (Platform.OS === 'ios') {
-                const iosVersion = parseInt(Platform.Version as string, 10);
-                if (iosVersion >= 17) {
-                  try {
-                    setLoading(true);
-                    // Use Apple's native SubscriptionStoreView
-                    // This automatically includes Privacy Policy, Terms of Use, pricing, etc.
-                    // Call native module directly to avoid import/bundling issues
-                    await presentSubscriptionStoreViewWithGroupID();
-                  } catch (error: any) {
-                    console.error('❌ Error presenting native subscription store:', error);
-                    // IMPORTANT: do NOT fall back to the custom paywall on iOS 17+ (App Review requirement).
-                    Alert.alert('Error', 'Unable to load subscription options. Please try again.');
-                  } finally {
-                    setLoading(false);
-                  }
-                  return;
+        <TouchableOpacity
+          style={[
+            styles.subscribeButton,
+            (loading || (Platform.OS !== 'ios' && !selectedPlan)) && styles.subscribeButtonDisabled
+          ]}
+          onPress={async () => {
+            // iOS 17.0+: Use Apple's native SubscriptionStoreView (includes all required info)
+            if (Platform.OS === 'ios') {
+              const iosVersion = parseInt(Platform.Version as string, 10);
+              if (iosVersion >= 17) {
+                try {
+                  setLoading(true);
+                  // Use Apple's native SubscriptionStoreView
+                  // This automatically includes Privacy Policy, Terms of Use, pricing, etc.
+                  // Call native module directly to avoid import/bundling issues
+                  await presentSubscriptionStoreViewWithGroupID();
+                } catch (error: any) {
+                  console.error('❌ Error presenting native subscription store:', error);
+                  // IMPORTANT: do NOT fall back to the custom paywall on iOS 17+ (App Review requirement).
+                  Alert.alert('Error', 'Unable to load subscription options. Please try again.');
+                } finally {
+                  setLoading(false);
                 }
-              }
-              
-              // Fallback: Custom subscription flow for older iOS versions and Android
-              if (!selectedPlan) {
-                Alert.alert('Select a Plan', 'Please select a plan first.');
                 return;
               }
+            }
 
-              try {
-                await handleSelectPlan(selectedPlan);
-              } catch (error: any) {
-                console.error('❌ Unhandled error in handleSelectPlan:', error);
-                setLoading(false);
-                Alert.alert('Error', 'Failed to process subscription. Please try again.');
-              }
-            }}
-            disabled={loading || (Platform.OS !== 'ios' && !selectedPlan)}
-            activeOpacity={0.7}
-          >
-            {loading ? (
-              <ActivityIndicator size="small" color="#ffffff" />
-            ) : (
-              <Text style={styles.subscribeButtonText}>
-                {Platform.OS === 'ios' && parseInt(Platform.Version as string, 10) >= 17
-                  ? 'Buy a Plan'
+            // Fallback: Custom subscription flow for older iOS versions and Android
+            if (!selectedPlan) {
+              Alert.alert('Select a Plan', 'Please select a plan first.');
+              return;
+            }
+
+            try {
+              await handleSelectPlan(selectedPlan);
+            } catch (error: any) {
+              console.error('❌ Unhandled error in handleSelectPlan:', error);
+              setLoading(false);
+              Alert.alert('Error', 'Failed to process subscription. Please try again.');
+            }
+          }}
+          disabled={loading || (Platform.OS !== 'ios' && !selectedPlan)}
+          activeOpacity={0.7}
+        >
+          {loading ? (
+            <ActivityIndicator size="small" color="#ffffff" />
+          ) : (
+            <Text style={styles.subscribeButtonText}>
+              {Platform.OS === 'ios' && parseInt(Platform.Version as string, 10) >= 17
+                ? 'Buy a Plan'
+                : Platform.OS === 'android'
+                  ? 'Proceed to Payment'
                   : 'Subscribe'}
-              </Text>
-            )}
-          </TouchableOpacity>
-        )}
+            </Text>
+          )}
+        </TouchableOpacity>
 
         {/* Show message when no plan is selected */}
-        {!guestMode && !selectedPlan && !(Platform.OS === 'ios' && parseInt(Platform.Version as string, 10) >= 17) && (
+        {!selectedPlan && !(Platform.OS === 'ios' && parseInt(Platform.Version as string, 10) >= 17) && (
           <View style={styles.selectPlanPrompt}>
             <MaterialIcons name="info-outline" size={20} color="#4BA8FF" />
             <Text style={styles.selectPlanPromptText}>
               Select a plan above to continue
             </Text>
-          </View>
-        )}
-
-        {guestMode && onRequestLogin && (
-          <View style={styles.loginCtaContainer}>
-            <Text style={styles.loginCtaTitle}>Ready to subscribe?</Text>
-            <Text style={styles.loginCtaText}>
-              Log in or create an account to purchase a plan. Once you’re signed in, we’ll take you right back here.
-            </Text>
-            <TouchableOpacity
-              style={styles.loginCtaButton}
-              onPress={onRequestLogin}
-              activeOpacity={0.8}
-            >
-              <Text style={styles.loginCtaButtonText}>Log in to Continue</Text>
-            </TouchableOpacity>
           </View>
         )}
 
@@ -760,7 +721,7 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         </View>
 
         {/* Restore purchases (App Store requirement) */}
-        {Platform.OS === 'ios' && !guestMode && (
+        {Platform.OS === 'ios' && (
           <TouchableOpacity
             style={[styles.restoreButton, (restoring || loading) && styles.restoreButtonDisabled]}
             disabled={restoring || !!loading}
@@ -1020,6 +981,20 @@ const styles = StyleSheet.create({
   plansContainer: {
     gap: 16,
     marginBottom: 24,
+  },
+  plansLoadingContainer: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  plansLoadingText: {
+    color: '#6B7280',
+    fontSize: 14,
+    fontWeight: '500',
   },
   planCard: {
     backgroundColor: '#ffffff',

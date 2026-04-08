@@ -7,55 +7,49 @@ import {
   ScrollView,
   Alert,
   ActivityIndicator,
-  TextInput,
-  Modal,
   Platform,
   Linking,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { Buffer } from 'buffer';
+import * as Sharing from 'expo-sharing';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSubscription } from '@/hooks/useSubscription';
-import { SubscriptionService } from '@/services/subscription.service';
-import type { SubscriptionPlan } from '@/services/subscription.service';
-import { ManageSubscriptionModal } from '@/components/modals/ManageSubscriptionModal';
+import { SubscriptionService } from '@/features/subscription/subscription.service';
 import { useCurrentUser } from '@/core/auth';
-import { indianPhoneToE164, normalizeIndianPhoneInput } from '@/utils/phone';
+import { downloadLatestInvoice } from '@/api/userSubscription';
+
+const isPdfBytes = (bytes: Uint8Array): boolean => {
+  return (
+    bytes.length >= 4 &&
+    bytes[0] === 0x25 && // %
+    bytes[1] === 0x50 && // P
+    bytes[2] === 0x44 && // D
+    bytes[3] === 0x46 // F
+  );
+};
 
 interface SubscriptionScreenProps {
   navigation: any;
 }
 
 const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) => {
-  const insets = useSafeAreaInsets();
   const user = useCurrentUser();
   const {
-    hasAccess,
     subscription,
     currentPlan,
-    isFamilyPlan,
     isLoading,
     error,
-    familyMembers,
-    familyLoading,
-    familyError,
-    addFamilyMember,
-    removeFamilyMember,
     refresh
   } = useSubscription();
 
-  const [showAddMemberModal, setShowAddMemberModal] = useState(false);
-  const [showManageSubscriptionModal, setShowManageSubscriptionModal] = useState(false);
-  const [newMember, setNewMember] = useState({
-    phone: '+91',
-    name: '',
-    email: ''
-  });
   const [trialStatus, setTrialStatus] = useState<{
     isTrialActive: boolean;
     trialEndDate: Date | null;
     daysRemaining: number;
   } | null>(null);
   const [trialLoading, setTrialLoading] = useState(true);
+  const [invoiceLoading, setInvoiceLoading] = useState(false);
 
   // iOS-specific error handling
   useEffect(() => {
@@ -135,46 +129,6 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [subscription, isLoading]); // Only depend on subscription and isLoading
 
-  const handleAddFamilyMember = async () => {
-    const phoneE164 = indianPhoneToE164(newMember.phone);
-    if (!phoneE164) {
-      Alert.alert('Error', 'Please enter a phone number');
-      return;
-    }
-
-    const result = await addFamilyMember(phoneE164, newMember.name, newMember.email);
-    
-    if (result.success) {
-      Alert.alert('Success', 'Family member added successfully!');
-      setShowAddMemberModal(false);
-      setNewMember({ phone: '+91', name: '', email: '' });
-    } else {
-      Alert.alert('Error', result.error || 'Failed to add family member');
-    }
-  };
-
-  const handleRemoveFamilyMember = (memberId: string, memberName: string) => {
-    Alert.alert(
-      'Remove Family Member',
-      `Are you sure you want to remove ${memberName}?`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            const result = await removeFamilyMember(memberId);
-            if (result.success) {
-              Alert.alert('Success', 'Family member removed successfully!');
-            } else {
-              Alert.alert('Error', result.error || 'Failed to remove family member');
-            }
-          }
-        }
-      ]
-    );
-  };
-
   const formatDate = (dateString: string) => {
     return new Date(dateString).toLocaleDateString('en-IN', {
       year: 'numeric',
@@ -183,7 +137,7 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
     });
   };
 
-  const getDaysRemaining = (endDate: string) => {
+  const getDaysRemaining = (endDate: Date | string) => {
     const end = new Date(endDate);
     const now = new Date();
     const diffTime = end.getTime() - now.getTime();
@@ -225,6 +179,111 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
         'Unable to open email app. Please contact us at support@deephorizon.io',
         [{ text: 'OK' }]
       );
+    }
+  };
+
+  const handleDownloadInvoice = async () => {
+    if (invoiceLoading) return;
+
+    setInvoiceLoading(true);
+    try {
+      const { arrayBuffer, filename, contentType } = await downloadLatestInvoice();
+      const bytes = new Uint8Array(arrayBuffer);
+      console.log('[InvoiceDownload] API download complete', {
+        filename,
+        byteLength: bytes?.length ?? 0,
+        isPdfSignature: isPdfBytes(bytes),
+        contentType: contentType || 'application/pdf',
+      });
+
+      let opened = false;
+      let savedPath = '';
+      try {
+        const fsLegacyModule = await import('expo-file-system/legacy');
+        const FileSystemLegacy: any = (fsLegacyModule as any).default || (fsLegacyModule as any);
+        const baseDir =
+          FileSystemLegacy.cacheDirectory ||
+          FileSystemLegacy.documentDirectory ||
+          '';
+        if (baseDir) {
+          const safeName = filename && filename.toLowerCase().endsWith('.pdf') ? filename : 'latest-invoice.pdf';
+          const fileUri = `${baseDir}${safeName}`;
+          savedPath = fileUri;
+          const base64Data = Buffer.from(arrayBuffer).toString('base64');
+
+          console.log('[InvoiceDownload] Preparing to write file', {
+            baseDir,
+            safeName,
+            fileUri,
+            base64Length: base64Data.length,
+          });
+
+          await FileSystemLegacy.writeAsStringAsync(fileUri, base64Data, {
+            encoding: FileSystemLegacy.EncodingType?.Base64 || 'base64',
+          });
+
+          try {
+            const info = await FileSystemLegacy.getInfoAsync(fileUri, { size: true });
+            console.log('[InvoiceDownload] File write result', info);
+          } catch (infoErr) {
+            console.warn('[InvoiceDownload] Could not read file info after write', infoErr);
+          }
+
+          if (!opened) {
+            const canShare = await Sharing.isAvailableAsync();
+            if (canShare) {
+              console.log('[InvoiceDownload] Opening expo-sharing', { fileUri });
+              await Sharing.shareAsync(fileUri, {
+                mimeType: contentType || 'application/pdf',
+                dialogTitle: 'Download Invoice',
+                UTI: 'com.adobe.pdf',
+              });
+              opened = true;
+              console.log('[InvoiceDownload] expo-sharing opened');
+            }
+          }
+        } else {
+          console.warn('[InvoiceDownload] No writable base directory found in expo-file-system');
+        }
+      } catch (fileErr) {
+        console.warn('[InvoiceDownload] File save/open stage failed', fileErr);
+        // Will show manual fallback below.
+      }
+
+      if (!opened) {
+        if (savedPath) {
+          try {
+            const fsLegacyModule = await import('expo-file-system/legacy');
+            const FileSystemLegacy: any = (fsLegacyModule as any).default || (fsLegacyModule as any);
+            if (typeof FileSystemLegacy.getContentUriAsync === 'function') {
+              const contentUri = await FileSystemLegacy.getContentUriAsync(savedPath);
+              console.log('[InvoiceDownload] Attempting open via content URI fallback', { contentUri });
+              await Linking.openURL(contentUri);
+              opened = true;
+            }
+          } catch (fallbackErr) {
+            // Keep alert fallback below.
+            console.warn('[InvoiceDownload] Content URI fallback failed', fallbackErr);
+          }
+        }
+
+        if (!opened) {
+          Alert.alert(
+            'Invoice Downloaded',
+            savedPath
+              ? `The invoice was downloaded to:\n${savedPath}\n\nPlease open it from your Files app if it did not open automatically.`
+              : 'The invoice was downloaded, but could not be opened automatically. Please try again.'
+          );
+        }
+      }
+    } catch (error: any) {
+      console.error('Failed to download latest invoice:', error);
+      Alert.alert(
+        'Download Failed',
+        error?.message || 'Unable to download invoice right now. Please try again.'
+      );
+    } finally {
+      setInvoiceLoading(false);
     }
   };
 
@@ -411,7 +470,17 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
     );
   }
 
-  const daysRemaining = getDaysRemaining(subscription.end_date);
+  const daysRemaining = getDaysRemaining(subscription.currentPeriodEnd);
+  const planFeatures = Object.entries(currentPlan.features || {})
+    .filter(([, value]) => value !== false && value !== null && typeof value !== 'undefined')
+    .map(([key, value]) => {
+      const label = key
+        .replace(/([a-z])([A-Z])/g, '$1 $2')
+        .replace(/[_-]+/g, ' ')
+        .replace(/\b\w/g, (c) => c.toUpperCase());
+      if (value === true) return label;
+      return `${label}: ${String(value)}`;
+    });
 
   return (
     <SafeAreaView edges={['top']} style={styles.container}>
@@ -448,11 +517,11 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
             <View style={styles.priceContainer}>
               <Text style={styles.currency}>₹</Text>
               <Text style={styles.price}>{currentPlan.price}</Text>
-              <Text style={styles.period}>/{currentPlan.billing_cycle === 'monthly' ? 'month' : 'year'}</Text>
+              <Text style={styles.period}>/{currentPlan.frequency === 'MONTHLY' ? 'month' : 'year'}</Text>
             </View>
             
             <View style={styles.featuresContainer}>
-              {currentPlan.features.map((feature, index) => (
+              {planFeatures.map((feature, index) => (
                 <View key={index} style={styles.feature}>
                   <MaterialIcons name="check-circle" size={20} color="#4BA8FF" />
                   <Text style={styles.featureText}>{feature}</Text>
@@ -462,84 +531,37 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
 
             <View style={styles.renewalInfo}>
               <Text style={styles.renewalText}>
-                {daysRemaining > 0
-                  ? subscription.auto_renew
-                    ? `Renews in ${daysRemaining} days`
-                    : `Ends in ${daysRemaining} days`
-                  : 'Expired'}
+                {daysRemaining > 0 ? `Valid for ${daysRemaining} more day${daysRemaining === 1 ? '' : 's'}` : 'Expired'}
               </Text>
               <Text style={styles.renewalSubtext}>
-                {subscription.auto_renew
-                  ? 'Auto-renewal is on'
-                  : 'Auto-renewal is off (subscription remains active until the end date)'}
+                Subscription status: {subscription.status}
               </Text>
               <Text style={styles.renewalSubtext}>
-                {subscription.auto_renew ? 'Next billing' : 'Access ends'}: {formatDate(subscription.end_date)}
+                Current period ends: {formatDate(String(subscription.currentPeriodEnd))}
               </Text>
             </View>
           </View>
         </View>
 
-        {/* Family Members Section (for family plans) */}
-        {isFamilyPlan && (
-          <View style={styles.familySection}>
-            <View style={styles.sectionHeader}>
-              <Text style={styles.sectionTitle}>Family Members ({familyMembers.length}/{currentPlan?.max_members || 5})</Text>
-            </View>
-            
-            {familyMembers.length < (currentPlan?.max_members || 5) && (
-              <TouchableOpacity 
-                style={styles.addMemberButton}
-                onPress={() => setShowAddMemberModal(true)}
-              >
-                <MaterialIcons name="add" size={20} color="#4BA8FF" />
-                <Text style={styles.addMemberButtonText}>Add Member</Text>
-              </TouchableOpacity>
-            )}
-
-            {familyMembers.length === 0 ? (
-              <View style={styles.emptyFamilyContainer}>
-                <MaterialIcons name="group" size={48} color="#bdc3c7" />
-                <Text style={styles.emptyFamilyText}>No family members added yet</Text>
-                <Text style={styles.emptyFamilySubtext}>
-                  Add family members to share your subscription
-                </Text>
-              </View>
-            ) : (
-              familyMembers.map((member) => (
-                <View key={member.id} style={styles.memberCard}>
-                  <View style={styles.memberInfo}>
-                    <Text style={styles.memberName}>
-                      {member.name || 'Unnamed Member'}
-                    </Text>
-                    <Text style={styles.memberPhone}>{member.phone}</Text>
-                    {member.email && (
-                      <Text style={styles.memberEmail}>{member.email}</Text>
-                    )}
-                  </View>
-                  <TouchableOpacity 
-                    style={styles.removeMemberButton}
-                    onPress={() => handleRemoveFamilyMember(member.id, member.name || 'this member')}
-                  >
-                    <MaterialIcons name="delete" size={20} color="#e74c3c" />
-                  </TouchableOpacity>
-                </View>
-              ))
-            )}
-          </View>
-        )}
-
         {/* Action Buttons */}
         <View style={styles.actionButtons}>
           <TouchableOpacity 
             style={styles.primaryButton}
-            onPress={() => setShowManageSubscriptionModal(true)}
+            onPress={() => navigation.navigate('SubscriptionPlans')}
           >
-            <Text style={styles.primaryButtonText}>Manage Subscription</Text>
+            <Text style={styles.primaryButtonText}>Change Plan</Text>
           </TouchableOpacity>
           
-          <TouchableOpacity style={styles.secondaryButton}>
-            <Text style={styles.secondaryButtonText}>Download Invoice</Text>
+          <TouchableOpacity
+            style={[styles.secondaryButton, invoiceLoading && styles.disabledButton]}
+            onPress={handleDownloadInvoice}
+            disabled={invoiceLoading}
+          >
+            {invoiceLoading ? (
+              <ActivityIndicator size="small" color="#4BA8FF" />
+            ) : (
+              <Text style={styles.secondaryButtonText}>Download Invoice</Text>
+            )}
           </TouchableOpacity>
         </View>
 
@@ -559,90 +581,6 @@ const SubscriptionScreen: React.FC<SubscriptionScreenProps> = ({ navigation }) =
           </TouchableOpacity>
         </View>
       </ScrollView>
-
-      {/* Add Family Member Modal */}
-      <Modal
-        visible={showAddMemberModal}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setShowAddMemberModal(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Family Member</Text>
-              <TouchableOpacity onPress={() => setShowAddMemberModal(false)}>
-                <MaterialIcons name="close" size={24} color="#7f8c8d" />
-              </TouchableOpacity>
-            </View>
-
-            <View style={styles.modalBody}>
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Phone Number *</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newMember.phone}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, phone: normalizeIndianPhoneInput(text) }))}
-                  placeholder="+91 XXXXX XXXXX"
-                  keyboardType="phone-pad"
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Name (Optional)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newMember.name}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, name: text }))}
-                  placeholder="Enter member name"
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Email (Optional)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newMember.email}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, email: text }))}
-                  placeholder="Enter member email"
-                  keyboardType="email-address"
-                />
-              </View>
-            </View>
-
-            <View style={styles.modalActions}>
-              <TouchableOpacity 
-                style={styles.cancelButton}
-                onPress={() => setShowAddMemberModal(false)}
-              >
-                <Text style={styles.cancelButtonText}>Cancel</Text>
-              </TouchableOpacity>
-              <TouchableOpacity 
-                style={styles.addButton}
-                onPress={handleAddFamilyMember}
-              >
-                <Text style={styles.addButtonText}>Add Member</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        </View>
-      </Modal>
-
-      {/* Manage Subscription Modal */}
-      <ManageSubscriptionModal
-        visible={showManageSubscriptionModal}
-        onClose={() => setShowManageSubscriptionModal(false)}
-        currentPlanId={subscription.plan_id}
-        currentAutoRenew={!!subscription.auto_renew}
-        onCancelSuccess={async () => {
-          // Refresh subscription state after cancellation
-          await refresh();
-        }}
-        onChangePlan={() => {
-          // Navigate to subscription plans screen to change plan
-          navigation.navigate('SubscriptionPlans');
-        }}
-      />
     </SafeAreaView>
   );
 };

@@ -103,6 +103,9 @@ export interface PaymentOrderResult {
   orderId?: string;
   amount?: number;
   currency?: string;
+  keyId?: string;
+  localSubscriptionId?: string;
+  gatewaySubscriptionId?: string;
   error?: string;
 }
 

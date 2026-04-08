@@ -104,7 +104,11 @@ export function useSubscription() {
           orderResult.amount!,
           orderResult.currency!,
           plan,
-          { prefill: opts?.prefill }
+          {
+            prefill: opts?.prefill,
+            keyId: orderResult.keyId,
+            localSubscriptionId: orderResult.localSubscriptionId,
+          }
         );
 
         // Step 3: Refresh subscription if payment successful
