@@ -68,6 +68,15 @@ export const remove = async (
   return response.data;
 };
 
+export const getBlob = async (url: string, config?: AxiosRequestConfig): Promise<Blob> => {
+  const response = await apiClient.get(url, {
+    ...config,
+    responseType: 'blob',
+  });
+
+  return response.data;
+};
+
 export const request = {
   get,
   post,

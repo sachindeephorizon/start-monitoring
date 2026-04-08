@@ -1,100 +1,79 @@
-/**
- * Emergency Types
- * 
- * Type definitions for emergency system functionality.
- * 
- * iOS SAFETY: Emergency system must work reliably even when app is killed.
- * All escalation and agent notification logic runs server-side.
- */
+export type EmergencyStatus = 'ACTIVE' | 'RESOLVED' | 'CANCELLED' | 'ESCALATED';
 
-/**
- * Emergency status values
- * 
- * These match the database schema and represent the lifecycle of an emergency.
- */
-export type EmergencyStatus =
-  | 'triggered'
-  | 'active'
-  | 'acknowledged'
-  | 'in_progress'
-  | 'resolved'
-  | 'escalated';
-
-/**
- * Emergency priority levels
- */
 export type EmergencyPriority = 'low' | 'medium' | 'high' | 'critical' | 'emergency';
 
-/**
- * Emergency payload for triggering an emergency
- * 
- * This is the minimal data needed to create an emergency.
- * Location is optional - emergency must proceed even if location capture fails.
- */
-export interface EmergencyPayload {
-  /**
-   * Optional emergency description/context
-   */
-  description?: string;
-
-  /**
-   * Location latitude (captured automatically if available)
-   */
-  latitude?: number;
-
-  /**
-   * Location longitude (captured automatically if available)
-   */
-  longitude?: number;
-
-  /**
-   * Location accuracy in meters (if available)
-   */
-  accuracy?: number;
-
-  /**
-   * Pre-validated user ID from caller.
-   * When provided, the service skips its own getSession() call
-   * to avoid SDK auth lock contention during emergency creation.
-   */
-  userId?: string;
-
-  /**
-   * Pre-validated access token from caller.
-   * When provided, passed directly to dashboardApiClient to avoid
-   * a redundant getSession() call during token retrieval.
-   */
-  accessToken?: string;
+export interface CommandResponse<T> {
+  status: number;
+  message: string;
+  data: T;
 }
 
-/**
- * Emergency record from database
- */
-export interface Emergency {
+export interface TriggerEmergencyResult {
+  emergencyId: string;
+  status: 'ACTIVE';
+  callId: string;
+  callToken: string;
+  trackingId: string;
+}
+
+export interface AbortEmergencyPayload {
+  passkey: string;
+}
+
+export interface UpdateEmergencyStatusPayload {
+  status: 'RESOLVED' | 'CANCELLED' | 'ESCALATED';
+  resolutionNote?: string;
+}
+
+export interface EmergencySessionDto {
   id: string;
-  mobile_user_id: string;
-  user_id?: string; // Legacy field, may be null
-  description?: string;
+  userId: string;
+  callSessionId?: string | null;
+  locationTrackerId?: string | null;
+  callId?: string | null;
+  callToken?: string | null;
+  trackingId?: string | null;
   status: EmergencyStatus;
-  priority?: EmergencyPriority;
-  location?: any; // JSONB - can be PostGIS point or JSON object
-  triggered_at: string;
-  assigned_agent_id?: string;
-  claimed_by?: string;
-  resolved_at?: string;
-  routed_at?: string; // Timestamp when emergency was routed to agent
-  routing_strategy?: string; // Strategy used for agent assignment (e.g., 'load_balance', 'emergency_priority')
-  passcode_verification?: boolean; // Whether emergency passkey was verified
-  created_at: string;
-  updated_at: string;
+  triggerWindowSec: number;
+  resolvedByAgentId?: string | null;
+  resolutionNote?: string | null;
+  triggeredAt: string;
+  resolvedAt?: string | null;
+  cancelledAt?: string | null;
+  createdAt: string;
+  updatedAt: string;
 }
 
-/**
- * Emergency creation result
- */
+export interface EmergencyContextDto {
+  emergencyId: string;
+  status: EmergencyStatus;
+  callId?: string | null;
+  callToken?: string | null;
+  trackingId?: string | null;
+  triggerWindowSec: number;
+  triggeredAt: string;
+}
+
+export interface ActiveEmergencyState {
+  emergencyId: string;
+  callId: string;
+  callToken: string;
+  trackingId: string;
+  triggeredAtMs: number;
+  abortWindowSec: number;
+}
+
 export interface EmergencyCreationResult {
   success: boolean;
-  emergencyId?: string;
+  data?: TriggerEmergencyResult;
   error?: string;
+  statusCode?: number;
+}
+
+export interface EmergencyAbortResult {
+  success: boolean;
+  data?: EmergencySessionDto;
+  error?: string;
+  statusCode?: number;
 }
 

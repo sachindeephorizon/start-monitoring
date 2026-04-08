@@ -23,6 +23,7 @@ import { Service } from '@/types/services';
 import { styles as videoMonitorStyles } from '@/components/modals/VideoMonitorModal.styles';
 import { useCallEndedSocket } from '@/hooks/useCallEndedSocket';
 import { locationTrackingSocketService } from '@/core/location';
+import { streamVideoClientService } from '@/features/video/video.client';
 
 const VideoMonitorScreen: React.FC = () => {
 	const navigation = useNavigation();
@@ -31,6 +32,8 @@ const VideoMonitorScreen: React.FC = () => {
 	const routeAutoStart = route.params?.autoStart === true;
 	const routeAgentId = typeof route.params?.agentId === 'string' ? route.params.agentId : undefined;
 	const incomingCallId = typeof route.params?.callId === 'string' ? route.params.callId : null;
+	const incomingCallToken = typeof route.params?.callToken === 'string' ? route.params.callToken : null;
+	const isEmergencyRouteCall = Boolean(incomingCallToken);
 	const incomingUserName = typeof route.params?.userName === 'string' ? route.params.userName : null;
 	const [activeService, setActiveService] = useState<string | null>(Service.VIDEO);
 	const [isStartingCall, setIsStartingCall] = useState(false);
@@ -179,6 +182,10 @@ const VideoMonitorScreen: React.FC = () => {
 			return;
 		}
 
+		if (incomingCallToken) {
+			streamVideoClientService.setNextTokenOverride(incomingCallToken);
+		}
+
 		const resolvedUserName = incomingUserName || auth.user.name || auth.user.email || 'User';
 		const incomingSession: SimpleCallSession = {
 			id: incomingCallId,
@@ -191,12 +198,14 @@ const VideoMonitorScreen: React.FC = () => {
 
 		setCallSession(incomingSession);
 		setIsAudioCall(false);
-		setJoinExistingCall(true);
+		// Emergency redirects can arrive before Stream has materialized the call.
+		// If token is provided, allow create-on-join to avoid "Can't find call" 404.
+		setJoinExistingCall(!incomingCallToken);
 		setShowCall(true);
 		setActiveService(null);
 		setIsMonitoring(true);
 		console.log('[VideoMonitorScreen] Joining incoming call directly:', incomingCallId);
-	}, [auth.isAuthReady, auth.user, incomingCallId, incomingUserName, routeAutoStart, showCall]);
+	}, [auth.isAuthReady, auth.user, incomingCallId, incomingCallToken, incomingUserName, routeAutoStart, showCall]);
 
 	useEffect(() => {
 		if (!routeAutoStart || showCall || isStartingCall || !auth.isAuthReady || !auth.user?.id) {
@@ -332,6 +341,13 @@ const VideoMonitorScreen: React.FC = () => {
 			return;
 		}
 
+		// Emergency flow already starts REST location sync with backend trackerId.
+		// Avoid parallel socket tracker startup (which can fail when socket isn't ready).
+		if (isEmergencyRouteCall) {
+			trackedSessionIdRef.current = callSession.id;
+			return;
+		}
+
 		if (trackedSessionIdRef.current === callSession.id) {
 			return;
 		}
@@ -339,9 +355,26 @@ const VideoMonitorScreen: React.FC = () => {
 		let cancelled = false;
 
 		const startLocationTracking = async () => {
-			const result = await locationTrackingSocketService.startTracking({
-				type: 'VIDEO_CALL',
-			});
+			const maxAttempts = 3;
+			let attempt = 0;
+			let result: { ok: boolean; trackerId: string | null; reason?: string } = { ok: false, trackerId: null, reason: 'unknown' };
+
+			while (!cancelled && attempt < maxAttempts) {
+				attempt += 1;
+				result = await locationTrackingSocketService.startTracking({
+					type: 'VIDEO_CALL',
+				});
+
+				if (result.ok) {
+					break;
+				}
+
+				if (!String(result.reason || '').toLowerCase().includes('socket')) {
+					break;
+				}
+
+				await new Promise((resolve) => setTimeout(resolve, 1200));
+			}
 
 			if (cancelled) {
 				return;
@@ -360,7 +393,7 @@ const VideoMonitorScreen: React.FC = () => {
 		return () => {
 			cancelled = true;
 		};
-	}, [showCall, callSession, isAudioCall]);
+	}, [showCall, callSession, isAudioCall, isEmergencyRouteCall]);
 
 	const handleEndVideoSession = async () => {
 		trackedSessionIdRef.current = null;
@@ -459,7 +492,7 @@ const VideoMonitorScreen: React.FC = () => {
 						<StreamVideoCallDedicated
 							callId={callSession.roomCode}
 							userName={callSession.userName}
-							createCallIfMissing={!joinExistingCall}
+							createCallIfMissing={!joinExistingCall || !!incomingCallToken}
 							onCallEnd={handleCallEnd}
 							onCallError={handleCallError}
 						/>

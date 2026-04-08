@@ -14,19 +14,35 @@ interface EmergencyButtonProps {
   onPressIn: () => void;
   onPressOut: () => void;
   isEmergencyActive?: boolean; // Prop to track emergency state
+  isDisabled?: boolean;
 }
 
 const EmergencyButton: React.FC<EmergencyButtonProps> = ({
   onPressIn: handlePressIn,
   onPressOut: handlePressOut,
   isEmergencyActive = false,
+  isDisabled = false,
 }) => {
   const insets = useSafeAreaInsets();
 
   // Animation for press progress
   const pressProgress = useRef(new Animated.Value(0)).current;
   const scaleAnim = useRef(new Animated.Value(1)).current;
-  const pressTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const pressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const resetVisualState = () => {
+    Animated.timing(pressProgress, {
+      toValue: 0,
+      duration: 200,
+      useNativeDriver: false,
+    }).start();
+    Animated.spring(scaleAnim, {
+      toValue: 1,
+      friction: 3,
+      tension: 40,
+      useNativeDriver: true,
+    }).start();
+  };
 
   // Cleanup timer on unmount to prevent firing on unmounted component
   useEffect(() => {
@@ -46,21 +62,27 @@ const EmergencyButton: React.FC<EmergencyButtonProps> = ({
         clearTimeout(pressTimerRef.current);
         pressTimerRef.current = null;
       }
-      Animated.timing(pressProgress, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: false,
-      }).start();
-      Animated.spring(scaleAnim, {
-        toValue: 1,
-        friction: 3,
-        tension: 40,
-        useNativeDriver: true,
-      }).start();
+      resetVisualState();
     }
   }, [isEmergencyActive, pressProgress, scaleAnim]);
 
+  useEffect(() => {
+    if (!isDisabled) {
+      return;
+    }
+
+    if (pressTimerRef.current) {
+      clearTimeout(pressTimerRef.current);
+      pressTimerRef.current = null;
+    }
+    resetVisualState();
+  }, [isDisabled]);
+
   const onPressIn = () => {
+    if (isDisabled || isEmergencyActive || pressTimerRef.current) {
+      return;
+    }
+
     // Start progress animation
     Animated.timing(pressProgress, {
       toValue: 1,
@@ -76,6 +98,11 @@ const EmergencyButton: React.FC<EmergencyButtonProps> = ({
     // Set timer to trigger after 3 seconds
     // Once triggered, it will fire even if user releases
     pressTimerRef.current = setTimeout(() => {
+      if (isDisabled || isEmergencyActive) {
+        pressTimerRef.current = null;
+        resetVisualState();
+        return;
+      }
       handlePressIn();
       // Clear the timer reference after triggering
       pressTimerRef.current = null;
@@ -97,17 +124,7 @@ const EmergencyButton: React.FC<EmergencyButtonProps> = ({
       }).start();
     } else {
       // Timer already fired - emergency was triggered, reset everything
-      Animated.timing(pressProgress, {
-        toValue: 0,
-        duration: 200,
-        useNativeDriver: false,
-      }).start();
-      Animated.spring(scaleAnim, {
-        toValue: 1,
-        friction: 3,
-        tension: 40,
-        useNativeDriver: true,
-      }).start();
+      resetVisualState();
     }
     handlePressOut();
   };
@@ -130,6 +147,7 @@ const EmergencyButton: React.FC<EmergencyButtonProps> = ({
         style={styles.newEmergencyButton}
         onPressIn={onPressIn}
         onPressOut={onPressOut}
+        disabled={isDisabled || isEmergencyActive}
         activeOpacity={0.85}
         accessible={true}
         accessibilityLabel="Emergency button. Press and hold for 3 seconds to request assistance"

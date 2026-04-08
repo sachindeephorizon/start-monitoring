@@ -23,7 +23,32 @@ const PublicPlansScreen: React.FC<PublicPlansScreenProps> = ({
   onLoginRequest,
   navigation 
 }) => {
-  const plans = SubscriptionService.getPlans();
+  const [plans, setPlans] = React.useState(SubscriptionService.getPlans());
+  const [plansLoading, setPlansLoading] = React.useState(false);
+
+  React.useEffect(() => {
+    let mounted = true;
+    const loadPlans = async () => {
+      setPlansLoading(true);
+      try {
+        const fetchedPlans = await SubscriptionService.fetchPlans();
+        if (mounted) {
+          setPlans(fetchedPlans);
+        }
+      } catch (error) {
+        console.warn('⚠️ Failed to load public plans from backend:', error);
+      } finally {
+        if (mounted) {
+          setPlansLoading(false);
+        }
+      }
+    };
+
+    loadPlans();
+    return () => {
+      mounted = false;
+    };
+  }, []);
   
   // Calculate safe top padding for status bar
   const statusBarHeight = Platform.OS === 'ios' ? 44 : (StatusBar.currentHeight || 0);
@@ -57,7 +82,15 @@ const PublicPlansScreen: React.FC<PublicPlansScreenProps> = ({
         </View>
 
         <View style={styles.plansContainer}>
-          {plans.map((plan, index) => {
+          {plansLoading ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>Loading plans...</Text>
+            </View>
+          ) : plans.length === 0 ? (
+            <View style={styles.emptyState}>
+              <Text style={styles.emptyStateText}>No plans available right now.</Text>
+            </View>
+          ) : plans.map((plan, index) => {
             const isPopular = index === 1 || index === 3;
             return (
               <View
@@ -168,6 +201,18 @@ const styles = StyleSheet.create({
   plansContainer: {
     gap: 16,
     marginBottom: 24,
+  },
+  emptyState: {
+    backgroundColor: '#ffffff',
+    borderRadius: 12,
+    padding: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  emptyStateText: {
+    fontSize: 14,
+    color: '#6B7280',
+    fontWeight: '500',
   },
   planCard: {
     backgroundColor: '#ffffff',

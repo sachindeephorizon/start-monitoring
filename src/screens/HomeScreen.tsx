@@ -32,9 +32,7 @@ import { setCallPriorityActive } from '@/services/callPriority';
 import { Camera } from 'expo-camera';
 import { useAuth } from '@/core/auth';
 import { useNavigation, useRoute, useFocusEffect } from '@react-navigation/native';
-import { useEmergency } from '@/features/emergency';
-import { verifyEmergencyPasskeyDetailed } from '@/features/emergency/emergency.passkey';
-import { EMERGENCY_PASSKEY_TIMEOUT_SECONDS } from '@/features/emergency/emergency.constants';
+import { useEmergencyFlow } from '@/features/emergency/emergency.flow';
 import { useIOSCompatibleSiren } from '@/hooks/useIOSCompatibleSiren';
 import { useSubscription } from '@/hooks/useSubscription';
 import { useCheckIn } from '@/hooks/useCheckIn';
@@ -45,6 +43,7 @@ import { getMyThreads } from '@/api/chat';
 import { getActiveTrackMeSession, getTrackMeState } from '@/api/schedule-checking';
 import { chatSocketService, NotificationEnvelope } from '@/realtime/core';
 import SecurityAgentContactCard from '@/components/home/SecurityAgentContactCard';
+import { EmergencyService } from '@/features/emergency/emergency.service';
 
 interface HomeScreenProps {
   navigation: any;
@@ -121,15 +120,21 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   const [callSession, setCallSession] = useState<SimpleCallSession | null>(null);
   const [isAudioCall, setIsAudioCall] = useState(false);
   
-  // Emergency state
-  const { triggerEmergency } = useEmergency();
-  const [isEmergencyActive, setIsEmergencyActive] = useState(false);
-  const [showEmergencyPasskey, setShowEmergencyPasskey] = useState(false);
-  const [emergencyPasskey, setEmergencyPasskey] = useState('');
-  const [emergencyCountdown, setEmergencyCountdown] = useState(EMERGENCY_PASSKEY_TIMEOUT_SECONDS);
-  const [emergencyDeadline, setEmergencyDeadline] = useState<number | null>(null);
-  const [isEmergencyProcessing, setIsEmergencyProcessing] = useState(false);
-  const emergencyResponseInFlightRef = useRef(false);
+  // Emergency state (shared across screens)
+  const {
+    isEmergencyActive,
+    showEmergencyPasskey,
+    emergencyPasskey,
+    setEmergencyPasskey,
+    emergencyCountdown,
+    emergencyDeadline,
+    isEmergencyProcessing,
+    beginEmergency,
+    submitAbortPasskey,
+    startEmergencyCallFromState,
+    activeEmergencyId,
+  } = useEmergencyFlow();
+  const lastEmergencyRedirectRef = useRef<string | null>(null);
 
   // ✅ Auto-open service route from notification routing.
   // When a tracking_checkin notification is tapped, the router navigates to
@@ -255,6 +260,42 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     }, [refreshTrackMeBadge])
   );
 
+  useFocusEffect(
+    useCallback(() => {
+      let cancelled = false;
+
+      const maybeRedirectToEmergency = async () => {
+        // Keep passkey countdown flow on Home until that modal completes.
+        if (showEmergencyPasskey) {
+          return;
+        }
+
+        const context = await EmergencyService.fetchActiveEmergencyContext();
+        if (cancelled) {
+          return;
+        }
+
+        if (!context || context.status !== 'ACTIVE' || !context.emergencyId) {
+          lastEmergencyRedirectRef.current = null;
+          return;
+        }
+
+        if (lastEmergencyRedirectRef.current === context.emergencyId) {
+          return;
+        }
+
+        lastEmergencyRedirectRef.current = context.emergencyId;
+        (navigation as any).navigate('Emergency', { emergencyId: context.emergencyId });
+      };
+
+      void maybeRedirectToEmergency();
+
+      return () => {
+        cancelled = true;
+      };
+    }, [navigation, showEmergencyPasskey]),
+  );
+
   useEffect(() => {
     if (!auth.isAuthReady || !auth.user?.id) return;
 
@@ -359,7 +400,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   }, [hasActiveScheduleCheckIn, activeScheduleBlinkOpacity]);
 
   const shakeAnimation = useRef(new Animated.Value(0)).current;
-  const countdownIntervalRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   // Emergency status message (auto-dismissing)
   const [emergencyStatusMessage, setEmergencyStatusMessage] = useState<string | null>(null);
@@ -379,10 +419,6 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   useEffect(() => {
     return () => {
       mountedRef.current = false;
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-        countdownIntervalRef.current = null;
-      }
       if (statusDismissTimerRef.current) {
         clearTimeout(statusDismissTimerRef.current);
         statusDismissTimerRef.current = null;
@@ -484,329 +520,70 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
     }
   }, [auth.user, navigation]);
   
-  // Initiate emergency response (trigger emergency and start video call)
-  const initiateEmergencyResponse = useCallback(async (options?: { alertDescription?: string; callReason?: string }) => {
-    if (emergencyResponseInFlightRef.current) {
-      console.warn('[HomeScreen] ⚠️ Emergency response already in flight - skipping duplicate trigger');
-      return;
-    }
-    emergencyResponseInFlightRef.current = true;
-
-    console.log('🚨 ========================================');
-    console.log('🚨 INITIATING EMERGENCY RESPONSE');
-    console.log('🚨 ========================================');
-    const alertDescription = options?.alertDescription || 'Emergency button pressed - User requested immediate assistance';
-    const callReason = options?.callReason || 'Emergency video call - user requested immediate assistance';
-    console.log('[HomeScreen] Alert description:', alertDescription);
-    console.log('[HomeScreen] Call reason:', callReason);
-
-    try {
-      // Validate session is not expired before emergency
-      // ensureValidSession() handles token refresh internally
-      const { ensureValidSession: getValidSession } = await import('@/lib/supabase');
-      const currentSession = await getValidSession();
-
-      if (!currentSession?.user) {
-        console.error('[HomeScreen] ❌ No session available for emergency');
-        Alert.alert(
-          'Session Expired',
-          'Your session has expired. Please restart the app to continue.',
-          [{ text: 'OK' }]
-        );
-        emergencyResponseInFlightRef.current = false;
-        return;
-      }
-
-      if (__DEV__) console.log('[HomeScreen] ✅ Session valid for emergency, user ID:', currentSession.user.id);
-
-      // Trigger emergency — pass validated userId and accessToken to avoid
-      // redundant getSession() calls that contend on the SDK auth lock.
-      console.log('[HomeScreen] Step 1: Triggering emergency via EmergencyService...');
-      const result = await triggerEmergency({
-        description: alertDescription,
-        userId: currentSession.user.id,
-        accessToken: currentSession.access_token,
-      });
-
-      console.log('[HomeScreen] Emergency trigger result:', result);
-
-      if (!result.success) {
-        console.error('[HomeScreen] ❌ Emergency trigger FAILED:', result.error);
-        // Don't return — still proceed to video call. The video call is the
-        // critical safety feature; the DB record is secondary.
-        showEmergencyStatus('🚨 Connecting to DeepHorizon agent...', 3000);
-      } else {
-        console.log('[HomeScreen] ✅ Emergency triggered successfully!');
-        console.log('[HomeScreen] Emergency ID:', result.emergencyId);
-        showEmergencyStatus('🚨 Emergency sent to DeepHorizon agents', 3000);
-      }
-
-      // Brief delay to allow message to be visible before video call starts
-      await new Promise(resolve => setTimeout(resolve, 2000));
-
-      // Check if component is still mounted after delay
-      if (!mountedRef.current) return;
-
-      console.log('[HomeScreen] Step 2: Starting emergency video call...');
-
-      // Start emergency video call — ALWAYS attempt even if DB insert failed
-      await startCall('video', callReason);
-
-      console.log('[HomeScreen] ✅ Emergency video call started successfully');
-      console.log('[HomeScreen] 🚨 EMERGENCY RESPONSE COMPLETE');
-      console.log('[HomeScreen] ========================================');
-    } catch (error: any) {
-      console.error('[HomeScreen] ❌ Emergency response EXCEPTION:', error);
-      console.error('[HomeScreen] Error details:', {
-        message: error?.message,
-        stack: error?.stack,
-        name: error?.name,
-      });
-      Alert.alert(
-        'Emergency Alert Error',
-        `An error occurred: ${error?.message || 'Unknown error'}\n\nPlease try again or contact support immediately.`,
-        [{ text: 'OK' }]
-      );
-    } finally {
-      emergencyResponseInFlightRef.current = false;
-    }
-  }, [triggerEmergency, startCall, showEmergencyStatus]);
-  
-  // Handle emergency timeout (countdown expired)
-  const handleEmergencyTimeout = useCallback(async () => {
-    /**
-     * ✅ CRITICAL FIX: Don't set emergencyResponseInFlightRef here!
-     * The initiateEmergencyResponse() function handles this flag internally.
-     * Setting it here causes a race condition where the flag is true when
-     * initiateEmergencyResponse checks it, causing the emergency to be skipped.
-     *
-     * PREVIOUS BUG: Line 292 set the flag to true, then line 302 called
-     * initiateEmergencyResponse(), which checked the flag at line 219 and
-     * skipped the emergency creation!
-     */
-    if (emergencyResponseInFlightRef.current) {
-      console.warn('[HomeScreen] Emergency timeout triggered but response already in flight');
-      return;
-    }
-
-    console.log('[HomeScreen] 🚨 EMERGENCY TIMEOUT - Countdown expired!');
-    console.log('[HomeScreen] Closing modal and triggering emergency...');
-
-    emergencyActiveRef.current = false;
-    setIsEmergencyActive(false);
-    setShowEmergencyPasskey(false);
-    setEmergencyDeadline(null);
-
-    console.log('[HomeScreen] Calling initiateEmergencyResponse...');
-    await initiateEmergencyResponse({
-      alertDescription: 'Emergency escalation: countdown expired without verification',
-      callReason: 'Emergency video call - countdown expired',
-    });
-    console.log('[HomeScreen] initiateEmergencyResponse completed');
-  }, [initiateEmergencyResponse]);
-  
-  // Emergency countdown timer
-  useEffect(() => {
-    if (!isEmergencyActive || !emergencyDeadline) {
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-        countdownIntervalRef.current = null;
-      }
-      return;
-    }
-    
-    const updateCountdown = () => {
-      const remaining = Math.max(0, Math.ceil((emergencyDeadline - Date.now()) / 1000));
-      setEmergencyCountdown(remaining);
-      
-      if (remaining <= 0) {
-        // Countdown expired - trigger emergency
-        if (countdownIntervalRef.current) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-        }
-        handleEmergencyTimeout().catch((err: any) => {
-          console.error('[HomeScreen] Emergency timeout handler error:', err);
-        });
-      }
-    };
-    
-    updateCountdown();
-    countdownIntervalRef.current = setInterval(updateCountdown, 100);
-    
-    return () => {
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-        countdownIntervalRef.current = null;
-      }
-    };
-  }, [isEmergencyActive, emergencyDeadline, handleEmergencyTimeout]);
-  
-  // Ref-based guard to prevent double-submit (state closures can be stale on rapid taps)
-  const emergencyProcessingRef = useRef(false);
+  // Ref-based guard to prevent duplicate modal submit taps.
+  const emergencySubmitInFlightRef = useRef(false);
+  const emergencyPressInFlightRef = useRef(false);
 
   // Handle emergency passkey submit
   const handleEmergencyPasskeySubmit = useCallback(async () => {
-    if (emergencyProcessingRef.current) return;
+    if (emergencySubmitInFlightRef.current) return;
 
     /**
      * ✅ CRITICAL FIX: Check mounted state before updating
      */
     if (!mountedRef.current) return;
 
-    emergencyProcessingRef.current = true;
-    setIsEmergencyProcessing(true);
+    emergencySubmitInFlightRef.current = true;
 
     try {
-      // Validate passkey — use detailed result to distinguish wrong passkey from auth errors
-      const passkeyResult = await verifyEmergencyPasskeyDetailed(emergencyPasskey);
+      const result = await submitAbortPasskey();
 
-      /**
-       * CRITICAL FIX: After async operation, check if component is still mounted
-       * The await above could take time, and component might unmount during that time
-       */
       if (!mountedRef.current) return;
 
-      // Helper to clean up emergency state
-      const cleanupEmergencyState = () => {
-        emergencyActiveRef.current = false;
-        setIsEmergencyActive(false);
-        setShowEmergencyPasskey(false);
-        setEmergencyPasskey('');
-        setEmergencyDeadline(null);
-        setIsEmergencyProcessing(false);
-        emergencyProcessingRef.current = false;
-        if (countdownIntervalRef.current) {
-          clearInterval(countdownIntervalRef.current);
-          countdownIntervalRef.current = null;
-        }
-      };
-
-      if (passkeyResult.valid) {
-        // Correct passkey - cancel emergency
-        cleanupEmergencyState();
-
-        Alert.alert(
-          'Emergency Cancelled',
-          'Emergency alert has been successfully cancelled.',
-          [{ text: 'OK' }]
-        );
-      } else if (passkeyResult.isSystemError) {
-        // Auth/system error — don't trigger emergency (it would also fail).
-        // Show error and let user retry or dismiss.
-        console.error('[HomeScreen] Passkey verification system error:', passkeyResult.errorMessage);
-        cleanupEmergencyState();
-
-        Alert.alert(
-          'Verification Error',
-          'Could not verify your passkey due to a connection error. Emergency has been cancelled. Please try again if needed.',
-          [{ text: 'OK' }]
-        );
-      } else {
-        // Wrong passkey - trigger emergency immediately
-        const shake = Animated.sequence([
-          Animated.timing(shakeAnimation, {
-            toValue: 10,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-          Animated.timing(shakeAnimation, {
-            toValue: -10,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-          Animated.timing(shakeAnimation, {
-            toValue: 10,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-          Animated.timing(shakeAnimation, {
-            toValue: 0,
-            duration: 50,
-            useNativeDriver: true,
-          }),
-        ]);
-        shake.start();
-
-        cleanupEmergencyState();
-
-        await initiateEmergencyResponse({
-          alertDescription: 'Emergency escalation: incorrect passkey entered',
-          callReason: 'Emergency video call - incorrect passkey',
-        });
-
-        // Check mounted again after emergency response
-        if (!mountedRef.current) return;
-
-        Alert.alert(
-          'EMERGENCY ALERT ACTIVATED',
-          'Incorrect passkey entered. Security agents are connecting with you right now.',
-          [{ text: 'OK' }]
-        );
+      if (result.success) {
+        showEmergencyStatus('Emergency cancelled successfully.', 1800);
+        Alert.alert('Emergency Cancelled', 'Your emergency request has been cancelled.');
+        return;
       }
+
+      const shake = Animated.sequence([
+        Animated.timing(shakeAnimation, {
+          toValue: 10,
+          duration: 50,
+          useNativeDriver: true,
+        }),
+        Animated.timing(shakeAnimation, {
+          toValue: -10,
+          duration: 50,
+          useNativeDriver: true,
+        }),
+        Animated.timing(shakeAnimation, {
+          toValue: 10,
+          duration: 50,
+          useNativeDriver: true,
+        }),
+        Animated.timing(shakeAnimation, {
+          toValue: 0,
+          duration: 50,
+          useNativeDriver: true,
+        }),
+      ]);
+      shake.start();
+
+      Alert.alert(
+        'Abort Failed',
+        result.error || 'Unable to cancel emergency. Continuing emergency flow now.',
+        [{ text: 'Continue', onPress: () => { void startEmergencyCallFromState(); } }],
+      );
     } catch (error) {
-      console.error('[HomeScreen] Error validating emergency passkey:', error);
-      // On unexpected error, cancel emergency gracefully (don't trigger — it would likely fail too)
-      emergencyActiveRef.current = false;
-      setEmergencyPasskey('');
-      setIsEmergencyActive(false);
-      setShowEmergencyPasskey(false);
-      setEmergencyDeadline(null);
-      setIsEmergencyProcessing(false);
-      emergencyProcessingRef.current = false;
-
-      if (countdownIntervalRef.current) {
-        clearInterval(countdownIntervalRef.current);
-        countdownIntervalRef.current = null;
-      }
-
-      if (!mountedRef.current) return;
-
-      Alert.alert(
-        'Verification Error',
-        'An unexpected error occurred while verifying your passkey. Emergency has been cancelled for safety. Please try again if needed.',
-        [{ text: 'OK' }]
-      );
+      console.error('[HomeScreen] Error aborting emergency:', error);
+      Alert.alert('Abort Failed', 'Unable to verify abort request. Continuing emergency flow now.', [
+        { text: 'Continue', onPress: () => { void startEmergencyCallFromState(); } },
+      ]);
+    } finally {
+      emergencySubmitInFlightRef.current = false;
     }
-  }, [emergencyPasskey, isEmergencyProcessing, initiateEmergencyResponse, shakeAnimation]);
-  
-  // Begin emergency (called when button is pressed and held for 3 seconds)
-  // Ref-based guard for beginEmergency to prevent double-trigger from rapid taps
-  // (state-based guards suffer from stale closures on fast taps)
-  const emergencyActiveRef = useRef(false);
-
-  const beginEmergency = useCallback(() => {
-    if (emergencyActiveRef.current || isEmergencyActive || isEmergencyProcessing) {
-      console.log('🚨 Emergency already active, ignoring button press');
-      return;
-    }
-
-    // Guard: auth must be fully initialized before emergency can be triggered.
-    // Without this, the emergency API call will fail with "User does not exist"
-    // if the session JWT references a user that hasn't been fully hydrated.
-    if (!auth.isAuthReady) {
-      console.warn('🚨 Emergency blocked: auth not ready yet');
-      Alert.alert(
-        'Please Wait',
-        'App is still initializing. Please try again in a moment.',
-        [{ text: 'OK' }]
-      );
-      return;
-    }
-
-    console.log('🚨 Emergency triggered - initiating emergency protocol');
-    emergencyActiveRef.current = true;
-    setIsEmergencyActive(true);
-    setEmergencyCountdown(EMERGENCY_PASSKEY_TIMEOUT_SECONDS);
-    setEmergencyDeadline(Date.now() + EMERGENCY_PASSKEY_TIMEOUT_SECONDS * 1000);
-
-    // Always show passkey modal (like old app) - user can cancel or let it expire
-    setShowEmergencyPasskey(true);
-    setEmergencyPasskey('');
-    setIsEmergencyProcessing(false);
-    emergencyResponseInFlightRef.current = false;
-    console.log('🚨 Emergency modal should now be visible - showEmergencyPasskey:', true);
-  }, [isEmergencyActive, isEmergencyProcessing, auth.isAuthReady]);
+  }, [submitAbortPasskey, shakeAnimation, showEmergencyStatus, startEmergencyCallFromState]);
   
   // Handle logout
   const handleLogout = async () => {
@@ -829,8 +606,24 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
   };
 
   const handleEmergencyPress = () => {
+    if (emergencyPressInFlightRef.current || isEmergencyProcessing || isEmergencyActive) {
+      return;
+    }
+
+    emergencyPressInFlightRef.current = true;
     console.log('🚨 Emergency button pressed - triggering immediately');
-    beginEmergency();
+    void (async () => {
+      try {
+        const result = await beginEmergency();
+        if (!result.success) {
+          Alert.alert('Emergency Failed', result.error || 'Failed to trigger emergency. Please try again.');
+          return;
+        }
+        showEmergencyStatus('Emergency triggered. Enter passkey within 10 seconds to abort.', 2500);
+      } finally {
+        emergencyPressInFlightRef.current = false;
+      }
+    })();
   };
   
   const handleEmergencyPressOut = () => {
@@ -1045,6 +838,7 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           onPressIn={handleEmergencyPress}
           onPressOut={handleEmergencyPressOut}
           isEmergencyActive={isEmergencyActive}
+          isDisabled={isEmergencyProcessing || emergencyPressInFlightRef.current}
         />
 
         {/* Service Cards */}

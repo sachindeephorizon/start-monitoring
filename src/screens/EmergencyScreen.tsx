@@ -14,14 +14,18 @@ import {
   ActivityIndicator,
   ScrollView,
   Alert,
+  Animated,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
 import { MainStackParamList } from '@/navigation/MainNavigator';
-import { EmergencyService } from '@/features/emergency/emergency.service';
-import { Emergency } from '@/features/emergency/emergency.types';
+import { EmergencyService } from '../features/emergency/emergency.service';
+import { EmergencySessionDto } from '../features/emergency/emergency.types';
+import { useEmergencyFlow } from '@/features/emergency/emergency.flow';
 import { formatUserFriendlyDate } from '@/utils/timeHelpers';
+import { trackMeLocationSyncService } from '@/services/trackMeLocationSync.service';
+import { EmergencyPasskeyModal } from '@/components/modals/EmergencyPasskeyModal';
 
 type EmergencyScreenRouteProp = RouteProp<MainStackParamList, 'Emergency'>;
 
@@ -30,10 +34,18 @@ export default function EmergencyScreen() {
   const navigation = useNavigation();
   const { emergencyId } = route.params || {};
   
-  const [emergency, setEmergency] = useState<Emergency | null>(null);
+  const [emergency, setEmergency] = useState<EmergencySessionDto | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [isCancelling, setIsCancelling] = useState(false);
+  const [showDisableModal, setShowDisableModal] = useState(false);
+  const [disablePasskey, setDisablePasskey] = useState('');
+  const shakeAnimation = useState(() => new Animated.Value(0))[0];
+  const {
+    startEmergencyCallFromState,
+    activeEmergencyId,
+    disableEmergencyById,
+    isEmergencyProcessing,
+  } = useEmergencyFlow();
 
   // Load emergency on mount
   useEffect(() => {
@@ -79,7 +91,7 @@ export default function EmergencyScreen() {
 
   // Refresh emergency status periodically
   useEffect(() => {
-    if (!emergency || emergency.status === 'resolved') {
+    if (!emergency || emergency.status !== 'ACTIVE') {
       return;
     }
 
@@ -104,51 +116,65 @@ export default function EmergencyScreen() {
     return () => clearInterval(interval);
   }, [emergency, emergencyId]);
 
-  // Handle cancel emergency
-  const handleCancelEmergency = () => {
-    if (!emergency) return;
+  useEffect(() => {
+    let cancelled = false;
 
-    Alert.alert(
-      'Cancel Emergency',
-      'Are you sure you want to cancel this emergency?',
-      [
-        {
-          text: 'No',
-          style: 'cancel',
-        },
-        {
-          text: 'Yes, Cancel',
-          style: 'destructive',
-          onPress: async () => {
-            setIsCancelling(true);
-            try {
-              const success = await EmergencyService.cancel(emergency.id);
-              if (success) {
-                Alert.alert(
-                  'Emergency Cancelled',
-                  'The emergency has been cancelled.',
-                  [
-                    {
-                      text: 'OK',
-                      onPress: () => {
-                        navigation.goBack();
-                      },
-                    },
-                  ]
-                );
-              } else {
-                Alert.alert('Error', 'Failed to cancel emergency. Please try again.');
-              }
-            } catch (err: any) {
-              console.error('[EmergencyScreen] Error cancelling emergency:', err);
-              Alert.alert('Error', err.message || 'Failed to cancel emergency');
-            } finally {
-              setIsCancelling(false);
-            }
-          },
-        },
-      ]
-    );
+    const syncTracking = async () => {
+      if (!emergency || emergency.status !== 'ACTIVE') {
+        await trackMeLocationSyncService.stop();
+        return;
+      }
+
+      const trackerId = emergency.trackingId || emergency.locationTrackerId || undefined;
+      if (!trackerId) {
+        return;
+      }
+
+      if (cancelled) {
+        return;
+      }
+
+      await trackMeLocationSyncService.start(trackerId);
+    };
+
+    void syncTracking();
+
+    return () => {
+      cancelled = true;
+      void trackMeLocationSyncService.stop();
+    };
+  }, [emergency]);
+
+  const handleDisableEmergency = async () => {
+    if (!emergency?.id) {
+      return;
+    }
+
+    const result = await disableEmergencyById(emergency.id, disablePasskey.trim());
+    if (result.success) {
+      setShowDisableModal(false);
+      setDisablePasskey('');
+      setEmergency((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          status: 'CANCELLED',
+          cancelledAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString(),
+        };
+      });
+      Alert.alert('Emergency Disabled', 'Emergency was disabled successfully.');
+      return;
+    }
+
+    Animated.sequence([
+      Animated.timing(shakeAnimation, { toValue: 10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnimation, { toValue: -10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnimation, { toValue: 10, duration: 50, useNativeDriver: true }),
+      Animated.timing(shakeAnimation, { toValue: 0, duration: 50, useNativeDriver: true }),
+    ]).start();
+
+    Alert.alert('Disable Failed', result.error || 'Unable to disable emergency.');
   };
 
   if (loading) {
@@ -198,10 +224,10 @@ export default function EmergencyScreen() {
     );
   }
 
-  const triggeredDate = emergency.triggered_at ? new Date(emergency.triggered_at) : null;
-  const resolvedDate = emergency.resolved_at ? new Date(emergency.resolved_at) : null;
-  const isResolved = emergency.status === 'resolved';
-  const isActive = ['active', 'triggered', 'acknowledged', 'in_progress'].includes(emergency.status);
+  const triggeredDate = emergency.triggeredAt ? new Date(emergency.triggeredAt) : null;
+  const resolvedDate = emergency.resolvedAt ? new Date(emergency.resolvedAt) : null;
+  const isResolved = emergency.status === 'RESOLVED';
+  const isActive = emergency.status === 'ACTIVE';
 
   return (
     <SafeAreaView style={styles.container} edges={['top', 'bottom']}>
@@ -231,7 +257,7 @@ export default function EmergencyScreen() {
             style={styles.statusIcon}
           />
           <Text style={styles.statusText}>
-            {emergency.status.charAt(0).toUpperCase() + emergency.status.slice(1).replace('_', ' ')}
+            {emergency.status}
           </Text>
         </View>
 
@@ -255,48 +281,45 @@ export default function EmergencyScreen() {
           </View>
         )}
 
-        {/* Description */}
-        {emergency.description && (
+        {/* Resolution Note */}
+        {emergency.resolutionNote && (
           <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Description</Text>
-            <Text style={styles.sectionValue}>{emergency.description}</Text>
+            <Text style={styles.sectionLabel}>Resolution Note</Text>
+            <Text style={styles.sectionValue}>{emergency.resolutionNote}</Text>
           </View>
         )}
 
-        {/* Priority */}
-        {emergency.priority && (
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Priority</Text>
-            <Text style={styles.sectionValue}>
-              {emergency.priority.charAt(0).toUpperCase() + emergency.priority.slice(1)}
-            </Text>
-          </View>
-        )}
-
-        {/* Agent Assignment */}
-        {emergency.assigned_agent_id && (
-          <View style={styles.section}>
-            <Text style={styles.sectionLabel}>Assigned Agent</Text>
-            <Text style={styles.sectionValue}>Agent assigned</Text>
-          </View>
-        )}
-
-        {/* Cancel Button */}
         {isActive && (
-          <TouchableOpacity
-            style={[styles.cancelButton, isCancelling && styles.cancelButtonDisabled]}
-            onPress={handleCancelEmergency}
-            disabled={isCancelling}
-          >
-            {isCancelling ? (
-              <ActivityIndicator size="small" color="#ffffff" />
-            ) : (
-              <>
-                <MaterialIcons name="cancel" size={24} color="#ffffff" />
-                <Text style={styles.cancelButtonText}>Cancel Emergency</Text>
-              </>
-            )}
-          </TouchableOpacity>
+          <>
+            <TouchableOpacity
+              style={styles.callButton}
+              onPress={async () => {
+                const started = await startEmergencyCallFromState(emergency.id);
+                if (!started) {
+                  Alert.alert(
+                    'Call Not Ready',
+                    activeEmergencyId
+                      ? 'Unable to open emergency call right now. Please try again.'
+                      : 'No active emergency call context found on device yet.',
+                  );
+                }
+              }}
+            >
+              <MaterialIcons name="videocam" size={20} color="#ffffff" style={styles.callButtonIcon} />
+              <Text style={styles.callButtonText}>Open Emergency Call</Text>
+            </TouchableOpacity>
+
+            <TouchableOpacity
+              style={styles.disableButton}
+              onPress={() => {
+                setDisablePasskey('');
+                setShowDisableModal(true);
+              }}
+            >
+              <MaterialIcons name="lock-open" size={20} color="#ffffff" style={styles.callButtonIcon} />
+              <Text style={styles.callButtonText}>Disable Emergency</Text>
+            </TouchableOpacity>
+          </>
         )}
 
         {/* Info Message */}
@@ -309,6 +332,20 @@ export default function EmergencyScreen() {
           </View>
         )}
       </ScrollView>
+
+      <EmergencyPasskeyModal
+        visible={showDisableModal}
+        onSubmit={handleDisableEmergency}
+        onClose={() => setShowDisableModal(false)}
+        title="Disable Emergency"
+        subtitle="Enter passkey to disable"
+        icon="lock-open"
+        iconColor="#CC0022"
+        enteredPasskey={disablePasskey}
+        onPasskeyChange={setDisablePasskey}
+        isLoading={isEmergencyProcessing}
+        shakeAnimation={shakeAnimation}
+      />
     </SafeAreaView>
   );
 }
@@ -448,6 +485,34 @@ const styles = StyleSheet.create({
     fontSize: 14,
     marginLeft: 12,
     flex: 1,
+  },
+  callButton: {
+    marginTop: 12,
+    backgroundColor: '#CC0022',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  callButtonIcon: {
+    marginRight: 8,
+  },
+  callButtonText: {
+    color: '#ffffff',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  disableButton: {
+    marginTop: 12,
+    backgroundColor: '#4A1B1B',
+    borderRadius: 12,
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
   },
 });
 

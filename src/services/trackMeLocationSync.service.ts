@@ -53,8 +53,9 @@ class TrackMeLocationSyncService {
     this.watch = await Location.watchPositionAsync(
       {
         accuracy: Location.Accuracy.Balanced,
-        timeInterval: 15_000,
-        distanceInterval: 20,
+        // Keep periodic updates even when stationary.
+        // Distance constraints can suppress updates entirely on some devices.
+        timeInterval: 5_000,
       },
       (location) => {
         void this.handleLocation(location);

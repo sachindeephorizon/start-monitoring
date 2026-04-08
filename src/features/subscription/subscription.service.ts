@@ -29,14 +29,21 @@
 
 import { Platform } from 'react-native';
 import Constants from 'expo-constants';
-import { supabase, ensureValidSession } from '@/lib/supabase';
+import {
+  getUserProfile,
+  getUserSubscriptions,
+  Frequency,
+  SubscriptionStatus as ApiSubscriptionStatus,
+  type UserSubscription as ApiUserSubscription,
+} from '@/api/auth';
+import { initiateUserSubscription } from '@/api/userSubscription';
+import { getPlans as getBackendPlans, type BackendPlan } from '@/api/plans';
 import {
   Subscription,
   PaymentOrderResult,
   PaymentVerificationResult,
   RazorpayPaymentResponse,
 } from './subscription.types';
-import { SUBSCRIPTION_PLANS } from './subscription.constants';
 import { IOSPurchaseService } from './ios-purchase.service';
 
 // SubscriptionPlan interface matching old app
@@ -117,6 +124,117 @@ const PLANS: SubscriptionPlan[] = [
   }
 ];
 
+const ACTIVATION_POLL_ATTEMPTS = 6;
+const ACTIVATION_POLL_DELAY_MS = 2000;
+let plansCache: SubscriptionPlan[] | null = null;
+
+function toTitleCase(input: string): string {
+  return input
+    .replace(/[_-]+/g, ' ')
+    .replace(/([a-z])([A-Z])/g, '$1 $2')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase());
+}
+
+function mapPlanFeatures(features?: Record<string, unknown>): string[] {
+  if (!features || typeof features !== 'object') {
+    return [];
+  }
+
+  const mapped: string[] = [];
+  for (const [key, value] of Object.entries(features)) {
+    const label = toTitleCase(key);
+    if (value === true) {
+      mapped.push(label);
+      continue;
+    }
+    if (value === false || value === null || typeof value === 'undefined') {
+      continue;
+    }
+    if (Array.isArray(value)) {
+      if (value.length > 0) {
+        mapped.push(`${label}: ${value.join(', ')}`);
+      }
+      continue;
+    }
+    if (typeof value === 'object') {
+      mapped.push(label);
+      continue;
+    }
+    mapped.push(`${label}: ${String(value)}`);
+  }
+
+  return mapped;
+}
+
+function mapBackendPlanType(type: BackendPlan['type']): SubscriptionPlan['type'] {
+  if (type === 'FAMILY') return 'family';
+  return 'individual';
+}
+
+function mapBackendPlanToSubscriptionPlan(plan: BackendPlan): SubscriptionPlan {
+  const billingCycle = plan.frequency === 'YEARLY' ? 'yearly' : 'monthly';
+  const features = mapPlanFeatures(plan.features);
+
+  return {
+    id: plan.id,
+    name: plan.name,
+    type: mapBackendPlanType(plan.type),
+    billing_cycle: billingCycle,
+    price: typeof plan.price === 'number' ? plan.price : 0,
+    currency: 'INR',
+    max_members: plan.noOfUsers && plan.noOfUsers > 1 ? plan.noOfUsers : undefined,
+    features: features.length ? features : ['24/7 emergency support', 'Real-time tracking'],
+  };
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function mapApiStatusToLocal(status: ApiSubscriptionStatus): Subscription['status'] {
+  if (status === ApiSubscriptionStatus.ACTIVE) return 'active';
+  return 'expired';
+}
+
+function mapApiSubscriptionToLocal(sub: ApiUserSubscription): Subscription {
+  const planType = sub.plan?.type === 'FAMILY' ? 'family' : 'individual';
+  const billingCycle = sub.plan?.frequency === Frequency.YEARLY ? 'yearly' : 'monthly';
+
+  return {
+    id: sub.id,
+    user_id: sub.userId,
+    plan_id: sub.planId,
+    plan_name: sub.plan?.name || 'Plan',
+    plan_type: planType,
+    billing_cycle: billingCycle,
+    price: sub.plan?.price || sub.amount || 0,
+    currency: 'INR',
+    status: mapApiStatusToLocal(sub.status),
+    start_date: new Date(sub.currentPeriodStart).toISOString(),
+    end_date: new Date(sub.currentPeriodEnd).toISOString(),
+    payment_method: sub.gatewayType,
+    payment_id: sub.paymentReference,
+    created_at: new Date(sub.createdAt).toISOString(),
+    updated_at: new Date(sub.updatedAt).toISOString(),
+  };
+}
+
+function getLatestActiveSubscription(
+  subscriptions: ApiUserSubscription[] | null | undefined
+): ApiUserSubscription | null {
+  if (!subscriptions?.length) return null;
+  const latest = subscriptions.find((s) => s.isLatest) || subscriptions[0];
+  if (!latest) return null;
+
+  const isActive =
+    latest.status === ApiSubscriptionStatus.ACTIVE &&
+    new Date(latest.currentPeriodEnd) > new Date();
+
+  return isActive ? latest : null;
+}
+
 /**
  * Subscription Service
  * 
@@ -124,44 +242,6 @@ const PLANS: SubscriptionPlan[] = [
  * All payment processing and verification happens server-side.
  */
 export const SubscriptionService = {
-  // iOS: keep server state in sync with StoreKit entitlements.
-  // This prevents users from being incorrectly treated as "trial expired" after a successful App Store purchase
-  // (e.g. if the app was killed before verification completed, or the user reinstalls).
-  //
-  // We rate-limit sync to avoid repeated network calls on startup when multiple screens check entitlement.
-  _iosSyncInFlight: null as Promise<void> | null,
-  _iosLastSyncAtMs: 0,
-  async _maybeSyncIosPurchases(): Promise<void> {
-    if (Platform.OS !== 'ios') return;
-
-    const now = Date.now();
-    const MIN_INTERVAL_MS = 30_000;
-    if (this._iosSyncInFlight) {
-      await this._iosSyncInFlight;
-      return;
-    }
-    if (now - this._iosLastSyncAtMs < MIN_INTERVAL_MS) {
-      return;
-    }
-
-    this._iosLastSyncAtMs = now;
-    this._iosSyncInFlight = (async () => {
-      try {
-        // Sync active StoreKit purchases -> backend (verify_ios_purchase edge function will upsert user_subscriptions)
-        await IOSPurchaseService.syncPurchasesWithServer();
-      } catch (e) {
-        // Non-fatal: we fall back to DB/trial checks
-        console.warn('[Subscription Service] iOS entitlement sync failed (non-fatal):', e);
-      }
-    })();
-
-    try {
-      await this._iosSyncInFlight;
-    } finally {
-      this._iosSyncInFlight = null;
-    }
-  },
-
   /**
    * Get current active subscription for user
    * 
@@ -172,41 +252,9 @@ export const SubscriptionService = {
    */
   async getCurrentSubscription(): Promise<Subscription | null> {
     try {
-      const session = await ensureValidSession();
-      const user = session?.user;
-      if (!user) {
-        return null;
-      }
-
-      const { data, error } = await supabase
-        .from('user_subscriptions')
-        .select('*')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .order('created_at', { ascending: false })
-        .limit(1)
-        .single();
-
-      if (error || !data) {
-        // iOS: if DB doesn't reflect purchase yet, attempt a one-shot entitlement sync.
-        // This is critical for cases where StoreKit shows the subscription (Settings -> Subscriptions)
-        // but our backend record isn't created/updated yet.
-        if (Platform.OS === 'ios') {
-          await this._maybeSyncIosPurchases();
-          const { data: synced, error: syncedErr } = await supabase
-            .from('user_subscriptions')
-            .select('*')
-            .eq('user_id', user.id)
-            .eq('status', 'active')
-            .order('created_at', { ascending: false })
-            .limit(1)
-            .maybeSingle();
-          if (!syncedErr && synced) return synced as Subscription;
-        }
-        return null;
-      }
-
-      return data as Subscription;
+      const subscriptions = await getUserSubscriptions();
+      const active = getLatestActiveSubscription(subscriptions);
+      return active ? mapApiSubscriptionToLocal(active) : null;
     } catch (error) {
       console.error('[Subscription Service] Error getting current subscription:', error);
       return null;
@@ -237,98 +285,54 @@ export const SubscriptionService = {
     opts?: { couponCode?: string }
   ): Promise<PaymentOrderResult> {
     try {
-      // Call server function to create Razorpay order
-      // The server function should:
-      // 1. Create Razorpay order
-      // 2. Store order details
-      // 3. Return order ID and amount
-      const { data, error } = await supabase.functions.invoke('create_razorpay_order', {
-        body: { plan, couponCode: opts?.couponCode || null },
-      });
+      if (Platform.OS === 'android') {
+        const me = await getUserProfile();
+        const userId = (me as any)?.id || (me as any)?.userId || null;
 
-      // Edge function may return 200 with success:false for upstream (Razorpay) failures.
-      if (data && typeof (data as any).success === 'boolean' && (data as any).success === false) {
-        const msg =
-          (typeof (data as any).error === 'string' && (data as any).error) ||
-          'Failed to create payment order';
-        if (__DEV__ && typeof (data as any).details === 'string') {
-          console.warn('[Subscription Service] create_razorpay_order details:', (data as any).details);
-        }
-        return { success: false, error: msg };
-      }
-
-      if (error) {
-        // Supabase Functions errors often contain useful HTTP context but the default message is generic.
-        // Extract best-effort details for actionable debugging (and production support).
-        const anyErr = error as any;
-        const status =
-          typeof anyErr?.context?.status === 'number'
-            ? anyErr.context.status
-            : typeof anyErr?.context?.response?.status === 'number'
-              ? anyErr.context.response.status
-              : undefined;
-        const bodyText =
-          typeof anyErr?.context?.body === 'string'
-            ? anyErr.context.body
-            : typeof anyErr?.context?.responseText === 'string'
-              ? anyErr.context.responseText
-              : undefined;
-
-        let serverMessage: string | null = null;
-        if (bodyText) {
-          try {
-            const parsed = JSON.parse(bodyText);
-            serverMessage =
-              (typeof parsed?.error === 'string' && parsed.error) ||
-              (typeof parsed?.message === 'string' && parsed.message) ||
-              null;
-            // If edge function provides diagnostic details, append a short snippet for dev logs.
-            if (__DEV__ && typeof parsed?.details === 'string' && parsed.details) {
-              console.warn('[Subscription Service] Edge function details:', parsed.details);
-            }
-          } catch {
-            serverMessage = bodyText.slice(0, 200);
-          }
-        }
-
-        console.error('[Subscription Service] Failed to create payment order:', {
-          name: anyErr?.name,
-          message: anyErr?.message,
-          status,
-          serverMessage,
-        });
-
-        if (status === 401) {
+        if (!userId) {
           return {
             success: false,
-            error: 'Your session has expired. Please log out and log in again, then retry the payment.',
+            error: 'User not authenticated',
           };
         }
-        return {
-          success: false,
-          error:
-            serverMessage ||
-            (typeof status === 'number'
-              ? `Payment server error (${status}). Please try again.`
-              : (error as any).message || 'Failed to create payment order'),
-        };
-      }
 
-      // For recurring subscriptions we return `subscriptionId`, but we also keep `orderId` as a legacy alias.
-      const orderId = data?.subscriptionId || data?.orderId;
-      if (!orderId) {
+        const initiated = await initiateUserSubscription({
+          userId: String(userId),
+          planId: plan.id,
+          type: 'PAID',
+          gatewayType: 'RAZORPAY',
+          offerCode: opts?.couponCode,
+        });
+
+        if (!initiated.paymentRequired) {
+          return {
+            success: false,
+            error: 'No payment required for this subscription type',
+          };
+        }
+
+        const payload = initiated.paymentGatewayPayload;
+        if (!payload?.subscriptionId || !payload?.keyId) {
+          return {
+            success: false,
+            error: 'Invalid payment payload from backend',
+          };
+        }
+
         return {
-          success: false,
-          error: 'Invalid response from server',
+          success: true,
+          orderId: payload.subscriptionId,
+          amount: typeof payload.amount === 'number' ? payload.amount : plan.price,
+          currency: payload.currency || 'INR',
+          keyId: payload.keyId,
+          localSubscriptionId: initiated.id,
+          gatewaySubscriptionId: payload.subscriptionId,
         };
       }
 
       return {
-        success: true,
-        orderId: orderId,
-        // For subscription checkout, amount is not required, but we keep it for UI / logs.
-        amount: typeof data.amount === 'number' ? data.amount : plan.price,
-        currency: data.currency || 'INR',
+        success: false,
+        error: 'Direct payment order creation is only enabled for Android backend flow.',
       };
     } catch (error: any) {
       console.error('[Subscription Service] Error creating payment order:', error);
@@ -355,7 +359,11 @@ export const SubscriptionService = {
     amount: number,
     currency: string,
     plan: SubscriptionPlan,
-    opts?: { prefill?: { email?: string; contact?: string; name?: string } }
+    opts?: {
+      prefill?: { email?: string; contact?: string; name?: string };
+      keyId?: string;
+      localSubscriptionId?: string;
+    }
   ): Promise<PaymentVerificationResult> {
     // iOS: Use StoreKit
     if (Platform.OS === 'ios') {
@@ -404,7 +412,11 @@ export const SubscriptionService = {
     amount: number,
     currency: string,
     plan: SubscriptionPlan,
-    opts?: { prefill?: { email?: string; contact?: string; name?: string } }
+    opts?: {
+      prefill?: { email?: string; contact?: string; name?: string };
+      keyId?: string;
+      localSubscriptionId?: string;
+    }
   ): Promise<PaymentVerificationResult> {
     try {
       if (Platform.OS !== 'android') {
@@ -418,7 +430,8 @@ export const SubscriptionService = {
       // This should be stored securely (e.g., in environment variables)
       const extra = (Constants?.expoConfig?.extra as any) || {};
       const keyFromExtra = typeof extra?.razorpayKeyId === 'string' ? extra.razorpayKeyId : '';
-      const RAZORPAY_KEY = String(process.env.EXPO_PUBLIC_RAZORPAY_KEY_ID || keyFromExtra || '').trim();
+      const keyFromBackend = typeof opts?.keyId === 'string' ? opts.keyId.trim() : '';
+      const RAZORPAY_KEY = String(keyFromBackend || process.env.EXPO_PUBLIC_RAZORPAY_KEY_ID || keyFromExtra || '').trim();
 
       if (!RAZORPAY_KEY) {
         return {
@@ -501,52 +514,32 @@ export const SubscriptionService = {
     paymentResponse: RazorpayPaymentResponse & { plan: SubscriptionPlan }
   ): Promise<PaymentVerificationResult> {
     try {
-      // Subscriptions flow requires subscription id
-      if (!paymentResponse.razorpay_subscription_id) {
-        return {
-          success: false,
-          error: 'Missing Razorpay subscription id in payment response',
-        };
-      }
+      if (Platform.OS === 'android') {
+        for (let attempt = 1; attempt <= ACTIVATION_POLL_ATTEMPTS; attempt++) {
+          const subscriptions = await getUserSubscriptions();
+          const active = getLatestActiveSubscription(subscriptions);
 
-      // Call server function to verify payment
-      // The server function should:
-      // 1. Verify Razorpay signature
-      // 2. Create/update subscription in database
-      // 3. Return subscription details
-      const { data, error } = await supabase.functions.invoke('verify_razorpay_payment', {
-        body: paymentResponse,
-      });
+          if (active) {
+            return {
+              success: true,
+              subscription: mapApiSubscriptionToLocal(active),
+            };
+          }
 
-      // Edge function may return 200 with success:false for upstream (Razorpay) failures / pending states.
-      if (data && typeof (data as any).success === 'boolean' && (data as any).success === false) {
-        const msg =
-          (typeof (data as any).error === 'string' && (data as any).error) ||
-          'Payment verification failed';
-        if (__DEV__ && typeof (data as any).details === 'string') {
-          console.warn('[Subscription Service] verify_razorpay_payment details:', (data as any).details);
+          if (attempt < ACTIVATION_POLL_ATTEMPTS) {
+            await sleep(ACTIVATION_POLL_DELAY_MS);
+          }
         }
-        return { success: false, error: msg };
-      }
 
-      if (error) {
-        console.error('[Subscription Service] Payment verification failed:', error);
         return {
           success: false,
-          error: error.message || 'Payment verification failed',
-        };
-      }
-
-      if (!data?.subscription) {
-        return {
-          success: false,
-          error: 'Subscription not activated',
+          error: 'Payment received. Subscription is activating. Please wait a moment and refresh.',
         };
       }
 
       return {
-        success: true,
-        subscription: data.subscription as Subscription,
+        success: false,
+        error: 'Payment verification is handled via backend webhook polling flow.',
       };
     } catch (error: any) {
       console.error('[Subscription Service] Error verifying payment:', error);
@@ -564,23 +557,8 @@ export const SubscriptionService = {
    */
   async getAllSubscriptions(): Promise<Subscription[]> {
     try {
-      const session = await ensureValidSession();
-      const user = session?.user;
-      if (!user) {
-        return [];
-      }
-
-      const { data, error } = await supabase
-        .from('user_subscriptions')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      if (error || !data) {
-        return [];
-      }
-
-      return data as Subscription[];
+      const subscriptions = await getUserSubscriptions();
+      return (subscriptions || []).map(mapApiSubscriptionToLocal);
     } catch (error) {
       console.error('[Subscription Service] Error getting subscriptions:', error);
       return [];
@@ -588,17 +566,42 @@ export const SubscriptionService = {
   },
 
   /**
+   * Fetch plans from backend and update in-memory cache.
+   * Falls back to hardcoded plans if backend fetch fails.
+   */
+  async fetchPlans(): Promise<SubscriptionPlan[]> {
+    try {
+      const backendPlans = await getBackendPlans();
+      const paidPlans = backendPlans.filter((p) => !p.isDefault);
+      const sourcePlans = paidPlans.length > 0 ? paidPlans : backendPlans;
+
+      if (!sourcePlans.length) {
+        plansCache = PLANS;
+        return plansCache;
+      }
+
+      plansCache = sourcePlans.map(mapBackendPlanToSubscriptionPlan);
+      return plansCache;
+    } catch (error) {
+      console.warn('[Subscription Service] Failed to fetch plans from backend, using fallback:', error);
+      plansCache = PLANS;
+      return plansCache;
+    }
+  },
+
+  /**
    * Get all available subscription plans
    */
   getPlans(): SubscriptionPlan[] {
-    return PLANS;
+    return plansCache ?? PLANS;
   },
 
   /**
    * Get plan by ID
    */
   getPlan(planId: string): SubscriptionPlan | undefined {
-    return PLANS.find(plan => plan.id === planId);
+    const plans = plansCache ?? PLANS;
+    return plans.find(plan => plan.id === planId);
   },
 
   /**
@@ -611,52 +614,31 @@ export const SubscriptionService = {
     error: string | null 
   }> {
     try {
-      const session = await ensureValidSession();
-      const user = session?.user || null;
-      if (!user) {
+      const me = await getUserProfile();
+      const userId = (me as any)?.id || (me as any)?.userId || null;
+      if (!userId) {
         return { isTrialActive: false, trialEndDate: null, daysRemaining: 0, error: 'User not authenticated' };
       }
 
       // Check for active subscription
-      const { data: activeSub } = await supabase
-        .from('user_subscriptions')
-        .select('id')
-        .eq('user_id', user.id)
-        .eq('status', 'active')
-        .maybeSingle();
+      const subscriptions = await getUserSubscriptions();
+      const activeSub = getLatestActiveSubscription(subscriptions);
 
       if (activeSub) {
         // User has active subscription, no trial
         return { isTrialActive: false, trialEndDate: null, daysRemaining: 0, error: null };
       }
 
-      // iOS: if DB says no subscription, do a one-shot entitlement sync before concluding trial status.
-      // This avoids false "trial expired" when the App Store subscription exists but backend sync lagged.
-      if (Platform.OS === 'ios') {
-        await this._maybeSyncIosPurchases();
-        const { data: activeAfterSync } = await supabase
-          .from('user_subscriptions')
-          .select('id')
-          .eq('user_id', user.id)
-          .eq('status', 'active')
-          .maybeSingle();
-        if (activeAfterSync) {
-          return { isTrialActive: false, trialEndDate: null, daysRemaining: 0, error: null };
-        }
-      }
+      const trialStartRaw =
+        (me as any)?.trial_start_date ||
+        (me as any)?.trialStartDate ||
+        null;
 
-      // Check trial_start_date in mobile_users
-      const { data: mobileUser } = await supabase
-        .from('mobile_users')
-        .select('trial_start_date')
-        .eq('id', user.id)
-        .maybeSingle();
-
-      if (!mobileUser?.trial_start_date) {
+      if (!trialStartRaw) {
         return { isTrialActive: false, trialEndDate: null, daysRemaining: 0, error: null };
       }
 
-      const trialStart = new Date(mobileUser.trial_start_date);
+      const trialStart = new Date(String(trialStartRaw));
       const trialEnd = new Date(trialStart);
       trialEnd.setDate(trialEnd.getDate() + 7); // 7-day trial
       const now = new Date();

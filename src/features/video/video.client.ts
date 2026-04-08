@@ -17,6 +17,7 @@ class StreamVideoClientService {
   private cachedToken: string | null = null;
   private tokenExpiryTime: number = 0;
   private tokenInFlight: Promise<string> | null = null;
+  private nextTokenOverride: string | null = null;
 
   /**
    * Initialize Stream.io video client
@@ -112,9 +113,26 @@ class StreamVideoClientService {
   }
 
   /**
+   * Sets a one-shot token override consumed by the next token generation call.
+   * Used by emergency flow where backend returns a dedicated call token.
+   */
+  setNextTokenOverride(token: string): void {
+    this.nextTokenOverride = token;
+    // Keep cache in sync so immediate retries use the same token without another network call.
+    this.cachedToken = token;
+    this.tokenExpiryTime = Date.now() + 10 * 60 * 1000;
+  }
+
+  /**
    * Generate Stream.io token
    */
   private async generateToken(): Promise<string> {
+    if (this.nextTokenOverride) {
+      const override = this.nextTokenOverride;
+      this.nextTokenOverride = null;
+      return override;
+    }
+
     // Check cache
     if (this.cachedToken && Date.now() < this.tokenExpiryTime) {
       return this.cachedToken;
