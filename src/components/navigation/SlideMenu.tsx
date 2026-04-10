@@ -32,6 +32,8 @@ const SlideMenu: React.FC<SlideMenuProps> = ({
 
   const { currentPlan, isFamilyPlan, subscription, isLoading } = useSubscription();
 
+  console.log('[SlideMenu] Render', { visible, currentPlan: currentPlan?.name, isFamilyPlan, hasSubscription: !!subscription });
+
   const pendingNavigateRef = useRef<string | null>(null);
   const insets = useSafeAreaInsets();
 

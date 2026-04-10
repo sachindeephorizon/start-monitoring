@@ -86,6 +86,8 @@ export interface Plan {
   frequency: Frequency;
   price: number;
   noOfUsers: number;
+  max_members?: number;
+  maxMembers?: number;
   type: PlanType;
   gatewayPlanId?: string;
   isDefault: boolean;
