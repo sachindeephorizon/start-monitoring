@@ -54,6 +54,7 @@ export interface SubscriptionPlan {
   billing_cycle: 'monthly' | 'yearly';
   price: number;
   currency: string;
+  storekitPlanId?: string;
   max_members?: number;
   features: string[];
 }
@@ -184,6 +185,7 @@ function mapBackendPlanToSubscriptionPlan(plan: BackendPlan): SubscriptionPlan {
     billing_cycle: billingCycle,
     price: typeof plan.price === 'number' ? plan.price : 0,
     currency: 'INR',
+    storekitPlanId: typeof plan.storekitPlanId === 'string' ? plan.storekitPlanId : undefined,
     max_members: plan.noOfUsers && plan.noOfUsers > 1 ? plan.noOfUsers : undefined,
     features: features.length ? features : ['24/7 emergency support', 'Real-time tracking'],
   };

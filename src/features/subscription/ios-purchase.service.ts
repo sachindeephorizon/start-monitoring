@@ -23,7 +23,9 @@ import {
   type Purchase,
   type ProductSubscription,
 } from 'react-native-iap';
-import { supabase, ensureValidSession } from '@/lib/supabase';
+import { getUserProfile, type UserSubscription as ApiUserSubscription } from '@/api/auth';
+import { getPlans, type BackendPlan } from '@/api/plans';
+import { initiateUserSubscription, confirmIosSubscription } from '@/api/userSubscription';
 import { PaymentVerificationResult, Subscription as AppSubscription } from './subscription.types';
 
 // IMPORTANT: Do NOT import SubscriptionPlan from subscription.types.ts here.
@@ -36,6 +38,7 @@ export type SubscriptionPlanInput = {
   billing_cycle: 'monthly' | 'yearly';
   price: number;
   currency: string;
+  storekitPlanId?: string;
   features: string[];
   max_members?: number;
 };
@@ -115,6 +118,71 @@ function getPlanMeta(planId: string): SubscriptionPlanInput | null {
   const meta = PLAN_META_BY_PLAN_ID[planId];
   if (!meta) return null;
   return { id: planId, ...meta };
+}
+
+function mapBackendPlanToSubscriptionPlanInput(plan: BackendPlan): SubscriptionPlanInput {
+  return {
+    id: plan.id,
+    name: plan.name,
+    type: plan.type === 'FAMILY' ? 'family' : 'individual',
+    billing_cycle: plan.frequency === 'YEARLY' ? 'yearly' : 'monthly',
+    price: typeof plan.price === 'number' ? plan.price : 0,
+    currency: 'INR',
+    storekitPlanId: typeof plan.storekitPlanId === 'string' ? plan.storekitPlanId : undefined,
+    max_members: typeof plan.noOfUsers === 'number' && plan.noOfUsers > 1 ? plan.noOfUsers : undefined,
+    features: [],
+  };
+}
+
+function mapApiSubscriptionToAppSubscription(sub: ApiUserSubscription): AppSubscription {
+  const statusRaw = String(sub.status || '').toUpperCase();
+  const mappedStatus: AppSubscription['status'] =
+    statusRaw === 'ACTIVE' ? 'active' : statusRaw === 'CANCELED' ? 'cancelled' : 'expired';
+
+  return {
+    id: sub.id,
+    user_id: sub.userId,
+    plan_id: sub.planId,
+    plan_name: sub.plan?.name || 'Plan',
+    plan_type: sub.plan?.type === 'FAMILY' ? 'family' : 'individual',
+    billing_cycle: sub.plan?.frequency === 'YEARLY' ? 'yearly' : 'monthly',
+    price: sub.billedAmount || sub.amount || sub.plan?.price || 0,
+    currency: 'INR',
+    status: mappedStatus,
+    start_date: new Date(sub.currentPeriodStart as any).toISOString(),
+    end_date: new Date(sub.currentPeriodEnd as any).toISOString(),
+    payment_method: 'ios_storekit',
+    payment_id: sub.paymentReference,
+    created_at: new Date(sub.createdAt as any).toISOString(),
+    updated_at: new Date(sub.updatedAt as any).toISOString(),
+  };
+}
+
+async function getCurrentUserId(): Promise<string | null> {
+  try {
+    const me = await getUserProfile();
+    const userId = (me as any)?.id || (me as any)?.userId || null;
+    return userId ? String(userId) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function resolvePlanByProductId(productId: string): Promise<SubscriptionPlanInput | null> {
+  if (!productId) return null;
+
+  try {
+    const plans = await getPlans();
+    const backendPlan = plans.find((p) => p?.storekitPlanId === productId);
+    if (backendPlan) {
+      return mapBackendPlanToSubscriptionPlanInput(backendPlan);
+    }
+  } catch {
+    // Fallback to static mapping below.
+  }
+
+  const planId = PRODUCT_ID_TO_PLAN_ID[productId];
+  return planId ? getPlanMeta(planId) : null;
 }
 
 /**
@@ -259,12 +327,43 @@ export const IOSPurchaseService = {
     }
 
     try {
-      const productId = IOS_PRODUCT_IDS[plan.id];
+      const userId = await getCurrentUserId();
+      if (!userId) {
+        return {
+          success: false,
+          error: 'User not authenticated',
+        };
+      }
+
+      const initiated = await initiateUserSubscription({
+        userId,
+        planId: plan.id,
+        type: 'PAID',
+        gatewayType: 'IOS',
+      });
+
+      const localSubscriptionId = String(
+        initiated?.paymentGatewayPayload?.localSubscriptionId || initiated?.id || ''
+      ).trim();
+
+      const productId = String(
+        initiated?.paymentGatewayPayload?.productId ||
+          (typeof plan.storekitPlanId === 'string' ? plan.storekitPlanId : '') ||
+          IOS_PRODUCT_IDS[plan.id] ||
+          ''
+      ).trim();
       
       if (!productId) {
         return {
           success: false,
           error: `No App Store product ID found for plan: ${plan.id}`,
+        };
+      }
+
+      if (!localSubscriptionId) {
+        return {
+          success: false,
+          error: 'Missing local subscription id from backend initiate response',
         };
       }
 
@@ -403,17 +502,8 @@ export const IOSPurchaseService = {
       // Request purchase through StoreKit (v14 uses requestPurchase with type 'subs')
       try {
         // Production: pass appAccountToken (UUID) so App Store Server Notifications can reliably map
-        // renewals/cancellations back to the correct Supabase user.
-        let appAccountToken: string | undefined;
-        try {
-          const authSession = await ensureValidSession();
-          const uid = authSession?.user?.id;
-          if (typeof uid === 'string' && uid.length >= 32) {
-            appAccountToken = uid;
-          }
-        } catch {
-          // Non-fatal; purchase can proceed without it.
-        }
+        // renewals/cancellations back to the correct backend user.
+        const appAccountToken = userId && userId.length >= 32 ? userId : undefined;
 
         await requestPurchase({
           type: 'subs',
@@ -545,7 +635,9 @@ export const IOSPurchaseService = {
         },
         (purchase as any).transactionId || (purchase as any).id || '',
         productId,
-        plan
+        plan,
+        localSubscriptionId,
+        userId
       );
 
       return verificationResult;
@@ -581,6 +673,9 @@ export const IOSPurchaseService = {
     if (Platform.OS !== 'ios') return null;
 
     try {
+      const userId = await getCurrentUserId();
+      if (!userId) return null;
+
       // Ensure StoreKit connection exists (idempotent).
       try {
         await initConnection();
@@ -650,10 +745,26 @@ export const IOSPurchaseService = {
         const pid = (p as any)?.productId;
         if (typeof pid !== 'string' || !pid) continue;
 
-        const planId = PRODUCT_ID_TO_PLAN_ID[pid];
-        if (!planId) continue;
-        const plan = getPlanMeta(planId);
+        const plan = await resolvePlanByProductId(pid);
         if (!plan) continue;
+
+        let localSubscriptionId = '';
+        try {
+          const initiated = await initiateUserSubscription({
+            userId,
+            planId: plan.id,
+            type: 'PAID',
+            gatewayType: 'IOS',
+          });
+          localSubscriptionId = String(
+            initiated?.paymentGatewayPayload?.localSubscriptionId || initiated?.id || ''
+          ).trim();
+        } catch {
+          // Try next entitlement if initiate fails for this plan.
+          continue;
+        }
+
+        if (!localSubscriptionId) continue;
 
         // Prefer StoreKit 2 JWS; fall back to receipt only if needed.
         let transactionJws: string | null = null;
@@ -676,14 +787,16 @@ export const IOSPurchaseService = {
           }
         }
 
-        if (!transactionJws && !receipt) continue;
+        if (!receipt) continue;
 
         const txId = String((p as any)?.transactionId || (p as any)?.id || '');
         const res = await this.verifyPurchase(
           { receipt, transactionJws },
           txId,
           pid,
-          plan
+          plan,
+          localSubscriptionId,
+          userId
         );
 
         if (res.success && res.subscription) {
@@ -757,36 +870,29 @@ export const IOSPurchaseService = {
     verification: { receipt: string | null; transactionJws: string | null },
     transactionId: string,
     productId: string,
-    plan: SubscriptionPlanInput
+    plan: SubscriptionPlanInput,
+    localSubscriptionId: string,
+    userId: string
   ): Promise<PaymentVerificationResult> {
     try {
       console.log('[iOS Purchase] Verifying purchase with server...');
 
-      // Call server function to verify receipt
-      // The server function should:
-      // 1. Verify receipt with Apple's App Store Server API
-      // 2. Create/update subscription in database
-      // 3. Return subscription details
-      const { data, error } = await supabase.functions.invoke('verify_ios_purchase', {
-        body: {
-          receipt: verification.receipt,
-          transactionJws: verification.transactionJws,
-          transactionId,
-          productId,
-          planId: plan.id,
-          plan,
-        },
-      });
-
-      if (error) {
-        console.error('[iOS Purchase] Receipt verification failed:', error);
+      const receiptData = verification.receipt?.trim();
+      if (!receiptData) {
         return {
           success: false,
-          error: error.message || 'Receipt verification failed',
+          error: 'Missing receipt data for iOS confirmation',
         };
       }
 
-      if (!data?.subscription) {
+      const subscription = await confirmIosSubscription({
+        userId,
+        planId: plan.id,
+        localSubscriptionId,
+        receiptData,
+      });
+
+      if (!subscription?.id) {
         return {
           success: false,
           error: 'Subscription not activated',
@@ -796,7 +902,7 @@ export const IOSPurchaseService = {
       console.log('[iOS Purchase] Purchase verified successfully');
       return {
         success: true,
-        subscription: data.subscription as AppSubscription,
+        subscription: mapApiSubscriptionToAppSubscription(subscription),
       };
     } catch (error: any) {
       console.error('[iOS Purchase] Error verifying purchase:', error);
