@@ -10,7 +10,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Alert,
   TextInput,
   ActivityIndicator,
   ScrollView,
@@ -24,7 +23,6 @@ import formButtonStyles from '@/styles/FormButton.styles';
 import { modalStyles } from '@/styles/Modal.styles';
 import { useBodyguard } from '@/hooks/useBodyguard';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
-import { parseFullDateLabel } from '@/utils/dateFormat';
 
 export default function BookBodyguardScreen() {
   const navigation = useNavigation();
@@ -34,14 +32,7 @@ export default function BookBodyguardScreen() {
   const [calendarMonth, setCalendarMonth] = useState(new Date().getMonth());
   const [calendarYear, setCalendarYear] = useState(new Date().getFullYear());
 
-  // Check subscription access on mount
-  useEffect(() => {
-    checkSubscriptionAccess('Book A Bodyguard').then((hasAccess) => {
-      if (!hasAccess) {
-        navigation.goBack();
-      }
-    }).catch(() => {});
-  }, []);
+  
 
   const handleDateSelect = (formattedDate: string) => {
     bodyguard.setBodyguardDate(formattedDate);

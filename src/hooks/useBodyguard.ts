@@ -6,8 +6,12 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import { Alert } from 'react-native';
-import { bodyguardService, BookBodyguardData, BodyguardBooking } from '@/services/bodyguard.service';
-import { formatFullDateLabel } from '@/utils/dateFormat';
+import {
+  BodyguardBookingDto,
+  createBodyguardBooking,
+  getMyBodyguardBookings,
+} from '@/api/bodyguard-booking';
+import { formatFullDateLabel, parseFullDateLabel } from '@/utils/dateFormat';
 import { useAuth } from '@/core/auth';
 
 export interface UseBodyguardReturn {
@@ -22,7 +26,7 @@ export interface UseBodyguardReturn {
   setBodyguardDate: (date: string) => void;
 
   // Booking management
-  bookings: BodyguardBooking[];
+  bookings: BodyguardBookingDto[];
   isLoading: boolean;
   bookBodyguard: () => Promise<boolean>;
   cancelBooking: (bookingId: string) => Promise<boolean>;
@@ -38,14 +42,14 @@ export function useBodyguard(): UseBodyguardReturn {
   const [bodyguardDate, setBodyguardDate] = useState<string>(() => formatFullDateLabel(new Date()));
 
   // Booking management
-  const [bookings, setBookings] = useState<BodyguardBooking[]>([]);
+  const [bookings, setBookings] = useState<BodyguardBookingDto[]>([]);
   const [isLoading, setIsLoading] = useState(false);
 
   // Load bookings
   const loadBookings = useCallback(async () => {
     try {
       setIsLoading(true);
-      const userBookings = await bodyguardService.getUserBookings();
+      const userBookings = await getMyBodyguardBookings();
       setBookings(userBookings);
     } catch (error) {
       console.error('[useBodyguard] Error loading bookings:', error);
@@ -79,17 +83,20 @@ export function useBodyguard(): UseBodyguardReturn {
     setIsLoading(true);
 
     try {
-      const booking = await bodyguardService.bookBodyguard({
-        city: selectedCity,
-        numberOfGuards: bodyguardCount,
-        bookingDate: bodyguardDate,
+      const parsedDate = parseFullDateLabel(bodyguardDate);
+      parsedDate.setHours(9, 0, 0, 0);
+
+      const response = await createBodyguardBooking({
+        city: selectedCity.trim(),
+        date: parsedDate.toISOString(),
         reason: bodyguardReason.trim(),
-        location: selectedCity,
+        numberOfBodyguards: bodyguardCount,
       });
+      const booking = response.data;
 
       Alert.alert(
         'Booking Confirmed',
-        `Your bodyguard booking has been confirmed!\n\nBooking ID: ${booking.id}\nCity: ${selectedCity}\nBodyguards: ${bodyguardCount}\nDate: ${bodyguardDate}\n\nWe'll be in touch with you soon.`,
+        `Your bodyguard booking has been confirmed!\n\nBooking ID: ${booking.id}\nCity: ${booking.city}\nBodyguards: ${booking.numberOfBodyguards}\nDate: ${bodyguardDate}\n\nWe'll be in touch with you soon.`,
         [{ text: 'OK' }]
       );
 
@@ -112,17 +119,10 @@ export function useBodyguard(): UseBodyguardReturn {
 
   // Cancel booking
   const cancelBooking = useCallback(async (bookingId: string): Promise<boolean> => {
-    try {
-      await bodyguardService.cancelBooking(bookingId);
-      await loadBookings();
-      Alert.alert('Booking Cancelled', 'Your bodyguard booking has been cancelled.');
-      return true;
-    } catch (error: any) {
-      console.error('[useBodyguard] Error cancelling booking:', error);
-      Alert.alert('Error', error.message || 'Failed to cancel booking. Please try again.');
-      return false;
-    }
-  }, [loadBookings]);
+    console.warn('[useBodyguard] cancelBooking is not available for customer API.', bookingId);
+    Alert.alert('Not Available', 'Booking cancellation is not available at the moment.');
+    return false;
+  }, []);
 
   return {
     // Form state

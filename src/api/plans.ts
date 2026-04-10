@@ -13,6 +13,7 @@ export interface BackendPlan {
   noOfUsers: number;
   type: BackendPlanType;
   gatewayPlanId?: string;
+  storekitPlanId?: string;
   isDefault: boolean;
   features?: Record<string, unknown>;
   createdAt: string;

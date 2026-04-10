@@ -29,7 +29,7 @@ const HistoryScreen: React.FC<HistoryScreenProps> = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const auth = useAuth();
   const { isAuthReady } = auth;
-  const userId = auth.status === 'authenticated' ? auth.user.id : null;
+  const userId = auth.status === 'authenticated' && auth.user ? auth.user.id : null;
   const [historyData, setHistoryData] = useState<HistoryItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);

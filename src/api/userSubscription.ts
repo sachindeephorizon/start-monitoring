@@ -11,9 +11,11 @@ export interface InitiateUserSubscriptionRequest {
 
 export interface PaymentGatewayPayload {
   gatewayType: 'RAZORPAY' | 'IOS' | 'GOOGLE_PLAY';
-  keyId: string;
-  subscriptionId: string;
-  planId: string;
+  keyId?: string;
+  subscriptionId?: string;
+  localSubscriptionId?: string;
+  productId?: string;
+  planId?: string;
   amount: number;
   currency: string;
 }
@@ -46,6 +48,20 @@ export const initiateUserSubscription = async (
 export const getMyActiveSubscription = async (): Promise<UserSubscription[]> => {
   const res = await get('/user-subscriptions/my-active-subscription');
   return (res || []) as UserSubscription[];
+};
+
+export interface ConfirmIosSubscriptionRequest {
+  userId: string;
+  planId: string;
+  localSubscriptionId: string;
+  receiptData: string;
+}
+
+export const confirmIosSubscription = async (
+  payload: ConfirmIosSubscriptionRequest
+): Promise<UserSubscription> => {
+  const res = await post('/user-subscriptions/ios/confirm', payload);
+  return res as UserSubscription;
 };
 
 export interface LatestInvoiceDownloadResult {
