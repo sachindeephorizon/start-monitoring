@@ -1,4 +1,12 @@
-import { post } from "./config";
+import { get, post } from "./config";
+
+export interface UserHistoryResponse {
+  emergencies: any[];
+  checkins: any[];
+  trackingSessions: any[];
+  calls: any[];
+  bodyguardBookings: any[];
+}
 
 
 export interface UpdateUserProfileInput {
@@ -36,6 +44,11 @@ export const skipPasskeySetup = async () => {
   const res = await post("/users/skip-passkey-setup");
 
   return res.data;
+}
+
+export const getUserHistory = async (): Promise<UserHistoryResponse> => {
+  const res = await get("/users/history");
+  return (res?.data ?? res) as UserHistoryResponse;
 }
 
 

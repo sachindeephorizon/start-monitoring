@@ -12,8 +12,7 @@
  * > The server already decided everything.
  */
 
-import { supabase, ensureValidSession } from '@/lib/supabase';
-import { apiBaseUrl } from '@/config/environment';
+import { getUserHistory } from '@/api/user';
 import { HistoryItem, HistoryItemType, HistoryFilter } from './history.types';
 
 // Re-export types for convenience
@@ -25,95 +24,82 @@ export type { HistoryItem, HistoryItemType, HistoryFilter };
  * Provides read-only methods for fetching historical activity data.
  */
 export const HistoryService = {
+  _normalizeStatus(status?: string): string {
+    const raw = (status || '').toUpperCase();
+    switch (raw) {
+      case 'ACTIVE':
+      case 'IN_PROGRESS':
+      case 'ONGOING':
+        return 'active';
+      case 'RESOLVED':
+      case 'COMPLETED':
+      case 'ENDED':
+      case 'SUCCESS':
+        return 'completed';
+      case 'CANCELLED':
+      case 'CANCELED':
+        return 'cancelled';
+      case 'ESCALATED':
+        return 'escalated';
+      default:
+        return (status || 'unknown').toLowerCase();
+    }
+  },
+
+  _normalizeCallType(callType?: string): HistoryItemType {
+    const value = (callType || '').toLowerCase();
+    return value === 'audio' || value === 'audio_call' ? 'audio_call' : 'video_call';
+  },
+
   /**
    * Get all emergencies for current user
    * 
    * @returns Array of emergency records
    */
-  async getEmergencies(userId?: string): Promise<any[]> {
+  async getEmergencies(_userId?: string): Promise<any[]> {
     try {
-      const uid = userId || (await ensureValidSession())?.user?.id;
-      if (!uid) return [];
-
-      const { data, error } = await supabase
-        .from('emergencies')
-        .select('id, status, triggered_at, created_at, resolved_at, description, location, priority')
-        .eq('mobile_user_id', uid)
-        .order('triggered_at', { ascending: false });
-
-      return (!error && data) ? data : [];
+      const buckets = await getUserHistory();
+      return buckets?.emergencies ?? [];
     } catch (error) {
       console.error('[History Service] Error getting emergencies:', error);
       return [];
     }
   },
 
-  async getCheckIns(userId?: string): Promise<any[]> {
+  async getCheckIns(_userId?: string): Promise<any[]> {
     try {
-      const uid = userId || (await ensureValidSession())?.user?.id;
-      if (!uid) return [];
-
-      const { data, error } = await supabase
-        .from('checkins')
-        .select('id, status, scheduled_at, created_at, checked_in_at, notes, location_at_checkin')
-        .eq('mobile_user_id', uid)
-        .order('scheduled_at', { ascending: false });
-
-      return (!error && data) ? data : [];
+      const buckets = await getUserHistory();
+      return buckets?.checkins ?? [];
     } catch (error) {
       console.error('[History Service] Error getting check-ins:', error);
       return [];
     }
   },
 
-  async getTrackingSessions(userId?: string): Promise<any[]> {
+  async getTrackingSessions(_userId?: string): Promise<any[]> {
     try {
-      const uid = userId || (await ensureValidSession())?.user?.id;
-      if (!uid) return [];
-
-      const { data, error } = await supabase
-        .from('tracking_sessions')
-        .select('id, status, start_time, created_at, completed_at, end_time, session_name, last_known_location, initial_location')
-        .eq('mobile_user_id', uid)
-        .order('start_time', { ascending: false });
-
-      return (!error && data) ? data : [];
+      const buckets = await getUserHistory();
+      return buckets?.trackingSessions ?? [];
     } catch (error) {
       console.error('[History Service] Error getting tracking sessions:', error);
       return [];
     }
   },
 
-  async getCalls(userId?: string): Promise<any[]> {
+  async getCalls(_userId?: string): Promise<any[]> {
     try {
-      const uid = userId || (await ensureValidSession())?.user?.id;
-      if (!uid) return [];
-
-      const { data, error } = await supabase
-        .from('call_sessions')
-        .select('id, status, call_type, started_at, created_at, ended_at, priority, room_code')
-        .eq('mobile_user_id', uid)
-        .order('created_at', { ascending: false });
-
-      return (!error && data) ? data : [];
+      const buckets = await getUserHistory();
+      return buckets?.calls ?? [];
     } catch (error) {
       console.error('[History Service] Error getting calls:', error);
       return [];
     }
   },
 
-  async getBodyguardBookings(userId?: string): Promise<any[]> {
+  async getBodyguardBookings(_userId?: string): Promise<any[]> {
     try {
-      const uid = userId || (await ensureValidSession())?.user?.id;
-      if (!uid) return [];
-
-      const { data, error } = await supabase
-        .from('bodyguard_bookings')
-        .select('id, status, start_time, end_time, created_at, location, description, service_type')
-        .eq('mobile_user_id', uid)
-        .order('created_at', { ascending: false });
-
-      return (!error && data) ? data : [];
+      const buckets = await getUserHistory();
+      return buckets?.bodyguardBookings ?? [];
     } catch (error) {
       console.error('[History Service] Error getting bodyguard bookings:', error);
       return [];
@@ -121,34 +107,18 @@ export const HistoryService = {
   },
 
   /**
-   * Fetch all history data via dashboard proxy.
-   * Throws on failure so caller can fall back to direct Supabase.
+   * Fetch all history buckets from backend.
+   * Endpoint: GET /v1/users/history (resolved via API config versioning)
    */
-  async _getAllViaProxy(accessToken: string): Promise<{
+  async _getAllFromBackend(): Promise<{
     emergencies: any[];
     checkins: any[];
     trackingSessions: any[];
     calls: any[];
     bodyguardBookings: any[];
   }> {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10_000);
     try {
-      const res = await fetch(`${apiBaseUrl}/api/mobile/history`, {
-        headers: {
-          'Authorization': `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
-
-      if (!res.ok) {
-        throw new Error(`Proxy error: ${res.status}`);
-      }
-
-      const json = await res.json();
-      const data = json?.data || json;
+      const data = await getUserHistory();
       return {
         emergencies: data?.emergencies ?? [],
         checkins: data?.checkins ?? [],
@@ -156,9 +126,8 @@ export const HistoryService = {
         calls: data?.calls ?? [],
         bodyguardBookings: data?.bodyguardBookings ?? [],
       };
-    } catch (e: any) {
-      clearTimeout(timeoutId);
-      throw e;
+    } catch (error) {
+      throw error;
     }
   },
 
@@ -180,13 +149,12 @@ export const HistoryService = {
         id: item.id,
         type: 'emergency',
         title: 'Emergency Alert',
-        status: item.status || 'unknown',
-        started_at: item.triggered_at || item.created_at,
-        ended_at: item.resolved_at,
+        status: this._normalizeStatus(item.status),
+        started_at: item.triggeredAt || item.createdAt,
+        ended_at: item.resolvedAt || item.cancelledAt,
         metadata: {
-          description: item.description,
-          location: item.location,
-          priority: item.priority,
+          description: item.resolutionNote,
+          callSession: item.callSession,
         },
         raw: item,
       });
@@ -197,12 +165,14 @@ export const HistoryService = {
         id: item.id,
         type: 'checkin',
         title: 'Check-In',
-        status: item.status || 'unknown',
-        started_at: item.scheduled_at || item.created_at,
-        ended_at: item.checked_in_at,
+        status: this._normalizeStatus(item.status),
+        started_at: item.startAt || item.createdAt,
+        ended_at: item.endAt || item.lastRunAt,
         metadata: {
-          notes: item.notes,
-          location: item.location_at_checkin,
+          remarks: item.remarks,
+          frequency: item.frequency,
+          intervalMinutes: item.intervalMinutes,
+          escalationEnabled: item.escalationEnabled,
         },
         raw: item,
       });
@@ -212,36 +182,41 @@ export const HistoryService = {
       items.push({
         id: item.id,
         type: 'tracking',
-        title: item.session_name || 'Tracking Session',
-        status: item.status || 'unknown',
-        started_at: item.start_time || item.created_at,
-        ended_at: item.completed_at || item.end_time,
+        title: 'Tracking Session',
+        status: this._normalizeStatus(item.status),
+        started_at: item.startAt || item.createdAt,
+        ended_at: item.endAt || item.lastRunAt,
         metadata: {
-          description: item.session_name,
-          location: item.last_known_location || item.initial_location,
+          frequency: item.frequency,
+          intervalMinutes: item.intervalMinutes,
+          escalationEnabled: item.escalationEnabled,
         },
         raw: item,
       });
     });
 
     calls.forEach((item) => {
-      const callType = item.call_type === 'audio_call' ? 'audio_call' : 'video_call';
-      const duration = item.started_at && item.ended_at
-        ? new Date(item.ended_at).getTime() - new Date(item.started_at).getTime()
+      const callType = this._normalizeCallType(item.callType);
+      const duration = item.startedAt && item.endedAt
+        ? new Date(item.endedAt).getTime() - new Date(item.startedAt).getTime()
         : undefined;
 
       items.push({
         id: item.id,
         type: callType as HistoryItemType,
-        title: `${item.call_type === 'audio_call' ? 'Audio' : 'Video'} Call`,
-        status: item.status || 'unknown',
-        started_at: item.started_at || item.created_at,
-        ended_at: item.ended_at,
+        title: `${callType === 'audio_call' ? 'Audio' : 'Video'} Call`,
+        status: this._normalizeStatus(item.status),
+        started_at: item.startedAt || item.createdAt,
+        ended_at: item.endedAt,
         metadata: {
-          call_type: item.call_type,
+          callType: item.callType,
           duration: duration ? Math.floor(duration / 1000) : undefined,
           priority: item.priority,
-          room_code: item.room_code,
+          serviceType: item.serviceType,
+          isEscalated: item.isEscalated,
+          escalationReason: item.escalationReason,
+          agent: item.agent,
+          callId: item.callId,
         },
         raw: item,
       });
@@ -252,13 +227,15 @@ export const HistoryService = {
         id: item.id,
         type: 'bodyguard',
         title: 'Bodyguard Booking',
-        status: item.status || 'unknown',
-        started_at: item.start_time || item.created_at,
-        ended_at: item.end_time,
+        status: this._normalizeStatus(item.status),
+        started_at: item.bookingDate || item.createdAt,
+        ended_at: undefined,
         metadata: {
-          description: item.description,
-          service_type: item.service_type,
-          location: item.location,
+          reason: item.reason,
+          city: item.city,
+          numberOfBodyguards: item.numberOfBodyguards,
+          agentRemarks: item.agentRemarks,
+          updatedByAgent: item.updatedByAgent,
         },
         raw: item,
       });
@@ -293,64 +270,20 @@ export const HistoryService = {
   /**
    * Get all history items
    *
-   * Fetches all historical data and transforms it into UI-friendly format.
-   * Proxy-first: uses dashboard API (always reachable via Vercel), falls back to direct Supabase.
+   * Fetches all history buckets from backend and transforms into UI-friendly format.
    *
    * @param filter Optional filter to apply
    * @returns Array of history items
    */
   async getAll(filter?: HistoryFilter): Promise<HistoryItem[]> {
     try {
-      // Single ensureValidSession call — avoids 5 parallel calls all contending on the SDK lock
-      const session = await ensureValidSession();
-      const userId = session?.user?.id;
-      if (!userId) return [];
-
-      const accessToken = (session as any)?.access_token;
-
-      let emergencies: any[] = [];
-      let checkins: any[] = [];
-      let trackingSessions: any[] = [];
-      let calls: any[] = [];
-      let bodyguardBookings: any[] = [];
-      let dataFetched = false;
-
-      // Proxy-first: dashboard API is always reachable via Vercel
-      if (accessToken) {
-        try {
-          const proxyData = await this._getAllViaProxy(accessToken);
-          emergencies = proxyData.emergencies;
-          checkins = proxyData.checkins;
-          trackingSessions = proxyData.trackingSessions;
-          calls = proxyData.calls;
-          bodyguardBookings = proxyData.bodyguardBookings;
-          dataFetched = true;
-          console.log('[History Service] Data fetched via dashboard proxy');
-        } catch (proxyErr: any) {
-          console.warn('[History Service] Proxy failed, falling back to direct Supabase:', proxyErr?.message);
-        }
-      }
-
-      // Fallback: try direct Supabase
-      if (!dataFetched) {
-        try {
-          const [emergenciesRes, checkinsRes, trackingRes, callsRes, bookingsRes] = await Promise.all([
-            supabase.from('emergencies').select('id, status, triggered_at, created_at, resolved_at, description, location, priority').eq('mobile_user_id', userId).order('triggered_at', { ascending: false }),
-            supabase.from('checkins').select('id, status, scheduled_at, created_at, checked_in_at, notes, location_at_checkin').eq('mobile_user_id', userId).order('scheduled_at', { ascending: false }),
-            supabase.from('tracking_sessions').select('id, status, start_time, created_at, completed_at, end_time, session_name, last_known_location, initial_location').eq('mobile_user_id', userId).order('start_time', { ascending: false }),
-            supabase.from('call_sessions').select('id, status, call_type, started_at, created_at, ended_at, priority, room_code').eq('mobile_user_id', userId).order('created_at', { ascending: false }),
-            supabase.from('bodyguard_bookings').select('id, status, start_time, end_time, created_at, location, description, service_type').eq('mobile_user_id', userId).order('created_at', { ascending: false }),
-          ]);
-
-          emergencies = emergenciesRes.data || [];
-          checkins = checkinsRes.data || [];
-          trackingSessions = trackingRes.data || [];
-          calls = callsRes.data || [];
-          bodyguardBookings = bookingsRes.data || [];
-        } catch (directErr: any) {
-          console.error('[History Service] Direct Supabase fetch also failed:', directErr?.message);
-        }
-      }
+      const {
+        emergencies,
+        checkins,
+        trackingSessions,
+        calls,
+        bodyguardBookings,
+      } = await this._getAllFromBackend();
 
       return this._transformToHistoryItems(
         emergencies, checkins, trackingSessions, calls, bodyguardBookings, filter

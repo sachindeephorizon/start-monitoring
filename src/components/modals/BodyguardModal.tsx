@@ -10,7 +10,6 @@ import {
   View,
   Text,
   TouchableOpacity,
-  Alert,
   TextInput,
   ActivityIndicator,
   ScrollView,
@@ -23,7 +22,6 @@ import formButtonStyles from '../../styles/FormButton.styles';
 import { modalStyles } from '../../styles/Modal.styles';
 import { useBodyguard } from '@/hooks/useBodyguard';
 import { checkSubscriptionAccess } from '@/utils/subscriptionAccess';
-import { parseFullDateLabel } from '@/utils/dateFormat';
 
 export interface BodyguardModalProps {
   visible: boolean;
