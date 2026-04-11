@@ -13,6 +13,7 @@
 		13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 13B07FB51A68108700A75B9A /* Images.xcassets */; };
 		2FA23EE13FBC4E27963E6816 /* siren.mp3 in Resources */ = {isa = PBXBuildFile; fileRef = 750C22CF30F546BF897047AD /* siren.mp3 */; };
 		3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */; };
+		443D49282F8A45FC0040BADE /* Deep Horizon Security.storekit in Resources */ = {isa = PBXBuildFile; fileRef = 443D49272F8A45FC0040BADE /* Deep Horizon Security.storekit */; };
 		46B8EA55A8484F4EB8AD456A /* SubscriptionStoreViewModule.swift in Sources */ = {isa = PBXBuildFile; fileRef = A027A6D150C7489FAC86B663 /* SubscriptionStoreViewModule.swift */; };
 		BB2F792D24A3F905000567C9 /* Expo.plist in Resources */ = {isa = PBXBuildFile; fileRef = BB2F792C24A3F905000567C9 /* Expo.plist */; };
 		DE5F81F95EA787CB6A0A49CD /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = FC2B0DD82417EF4F910AF15F /* PrivacyInfo.xcprivacy */; };
@@ -23,6 +24,7 @@
 		13B07F961A680F5B00A75B9A /* DeepHorizonSecurity.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = DeepHorizonSecurity.app; sourceTree = BUILT_PRODUCTS_DIR; };
 		13B07FB51A68108700A75B9A /* Images.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; name = Images.xcassets; path = DeepHorizonSecurity/Images.xcassets; sourceTree = "<group>"; };
 		13B07FB61A68108700A75B9A /* Info.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = Info.plist; path = DeepHorizonSecurity/Info.plist; sourceTree = "<group>"; };
+		443D49272F8A45FC0040BADE /* Deep Horizon Security.storekit */ = {isa = PBXFileReference; lastKnownFileType = text; path = "Deep Horizon Security.storekit"; sourceTree = "<group>"; };
 		475490BD307F796E28A59372 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-DeepHorizonSecurity/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		5F6165C17D01930AF2CDBA0A /* Pods-DeepHorizonSecurity.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DeepHorizonSecurity.debug.xcconfig"; path = "Target Support Files/Pods-DeepHorizonSecurity/Pods-DeepHorizonSecurity.debug.xcconfig"; sourceTree = "<group>"; };
 		694BA72F7D8C70F00FABAE99 /* Pods-DeepHorizonSecurity.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DeepHorizonSecurity.release.xcconfig"; path = "Target Support Files/Pods-DeepHorizonSecurity/Pods-DeepHorizonSecurity.release.xcconfig"; sourceTree = "<group>"; };
@@ -102,6 +104,7 @@
 		83CBB9F61A601CBA00E9B192 = {
 			isa = PBXGroup;
 			children = (
+				443D49272F8A45FC0040BADE /* Deep Horizon Security.storekit */,
 				13B07FAE1A68108700A75B9A /* DeepHorizonSecurity */,
 				832341AE1AAA6A7D00B99B32 /* Libraries */,
 				83CBBA001A601CBA00E9B192 /* Products */,
@@ -201,6 +204,7 @@
 			isa = PBXResourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				443D49282F8A45FC0040BADE /* Deep Horizon Security.storekit in Resources */,
 				BB2F792D24A3F905000567C9 /* Expo.plist in Resources */,
 				13B07FBF1A68108700A75B9A /* Images.xcassets in Resources */,
 				3E461D99554A48A4959DE609 /* SplashScreen.storyboard in Resources */,
