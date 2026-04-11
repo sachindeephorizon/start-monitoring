@@ -26,7 +26,7 @@
 		475490BD307F796E28A59372 /* ExpoModulesProvider.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; name = ExpoModulesProvider.swift; path = "Pods/Target Support Files/Pods-DeepHorizonSecurity/ExpoModulesProvider.swift"; sourceTree = "<group>"; };
 		5F6165C17D01930AF2CDBA0A /* Pods-DeepHorizonSecurity.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DeepHorizonSecurity.debug.xcconfig"; path = "Target Support Files/Pods-DeepHorizonSecurity/Pods-DeepHorizonSecurity.debug.xcconfig"; sourceTree = "<group>"; };
 		694BA72F7D8C70F00FABAE99 /* Pods-DeepHorizonSecurity.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-DeepHorizonSecurity.release.xcconfig"; path = "Target Support Files/Pods-DeepHorizonSecurity/Pods-DeepHorizonSecurity.release.xcconfig"; sourceTree = "<group>"; };
-		750C22CF30F546BF897047AD /* siren.mp3 */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = undefined; includeInIndex = 0; lastKnownFileType = unknown; name = siren.mp3; path = DeepHorizonSecurity/siren.mp3; sourceTree = "<group>"; };
+		750C22CF30F546BF897047AD /* siren.mp3 */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 9; includeInIndex = 0; lastKnownFileType = unknown; name = siren.mp3; path = DeepHorizonSecurity/siren.mp3; sourceTree = "<group>"; };
 		856943C258C1AA75E58771C0 /* libPods-DeepHorizonSecurity.a */ = {isa = PBXFileReference; explicitFileType = archive.ar; includeInIndex = 0; path = "libPods-DeepHorizonSecurity.a"; sourceTree = BUILT_PRODUCTS_DIR; };
 		A027A6D150C7489FAC86B663 /* SubscriptionStoreViewModule.swift */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.swift; name = SubscriptionStoreViewModule.swift; path = DeepHorizonSecurity/SubscriptionStoreViewModule.swift; sourceTree = "<group>"; };
 		AA286B85B6C04FC6940260E9 /* SplashScreen.storyboard */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = file.storyboard; name = SplashScreen.storyboard; path = DeepHorizonSecurity/SplashScreen.storyboard; sourceTree = "<group>"; };
@@ -34,7 +34,7 @@
 		ED297162215061F000B7C4FE /* JavaScriptCore.framework */ = {isa = PBXFileReference; lastKnownFileType = wrapper.framework; name = JavaScriptCore.framework; path = System/Library/Frameworks/JavaScriptCore.framework; sourceTree = SDKROOT; };
 		F11748412D0307B40044C1D9 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; name = AppDelegate.swift; path = DeepHorizonSecurity/AppDelegate.swift; sourceTree = "<group>"; };
 		F11748442D0722820044C1D9 /* DeepHorizonSecurity-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; name = "DeepHorizonSecurity-Bridging-Header.h"; path = "DeepHorizonSecurity/DeepHorizonSecurity-Bridging-Header.h"; sourceTree = "<group>"; };
-		FC2B0DD82417EF4F910AF15F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; name = PrivacyInfo.xcprivacy; path = DeepHorizonSecurity/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
+		FC2B0DD82417EF4F910AF15F /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xml; name = PrivacyInfo.xcprivacy; path = DeepHorizonSecurity/PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		FDB077C34CC543D0B1594065 /* SubscriptionStoreViewModule.m */ = {isa = PBXFileReference; explicitFileType = undefined; fileEncoding = 4; includeInIndex = 0; lastKnownFileType = sourcecode.c.objc; name = SubscriptionStoreViewModule.m; path = DeepHorizonSecurity/SubscriptionStoreViewModule.m; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
@@ -137,7 +137,6 @@
 				5F6165C17D01930AF2CDBA0A /* Pods-DeepHorizonSecurity.debug.xcconfig */,
 				694BA72F7D8C70F00FABAE99 /* Pods-DeepHorizonSecurity.release.xcconfig */,
 			);
-			name = Pods;
 			path = Pods;
 			sourceTree = "<group>";
 		};
@@ -367,6 +366,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = DeepHorizonSecurity/DeepHorizonSecurity.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SN44FXASK2;
 				ENABLE_BITCODE = NO;
 				GCC_PREPROCESSOR_DEFINITIONS = (
 					"$(inherited)",
@@ -403,6 +403,7 @@
 				CLANG_ENABLE_MODULES = YES;
 				CODE_SIGN_ENTITLEMENTS = DeepHorizonSecurity/DeepHorizonSecurity.entitlements;
 				CURRENT_PROJECT_VERSION = 1;
+				DEVELOPMENT_TEAM = SN44FXASK2;
 				INFOPLIST_FILE = DeepHorizonSecurity/Info.plist;
 				IPHONEOS_DEPLOYMENT_TARGET = 15.1;
 				LD_RUNPATH_SEARCH_PATHS = (

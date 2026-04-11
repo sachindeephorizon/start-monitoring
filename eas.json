@@ -8,7 +8,10 @@
       "developmentClient": true,
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_ENV": "development"
+          "EXPO_PUBLIC_ENV": "development",
+        "EXPO_PUBLIC_BACKEND_URL": "https://dev-api.deephorizon.io",
+        "EXPO_PUBLIC_BACKEND_VERSION": "v1",
+        "EXPO_PUBLIC_WEBSOCKET_URL": "https://dev-api.deephorizon.io"
       },
       "ios": {
         "resourceClass": "m-medium"
@@ -20,10 +23,7 @@
     "preview": {
       "distribution": "internal",
       "env": {
-        "EXPO_PUBLIC_ENV": "development",
-        "EXPO_PUBLIC_BACKEND_URL": "https://dev-api.deephorizon.io",
-        "EXPO_PUBLIC_BACKEND_VERSION": "v1",
-        "EXPO_PUBLIC_WEBSOCKET_URL": "https://dev-api.deephorizon.io"
+        "EXPO_PUBLIC_ENV": "development"
       },
       "ios": {
         "resourceClass": "m-medium"
