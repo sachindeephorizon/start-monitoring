@@ -3,6 +3,29 @@ import React
 import StoreKit
 import SwiftUI
 
+private final class DismissAwareHostingController<Content: View>: UIHostingController<Content> {
+  var onDismiss: (() -> Void)?
+  private var hasNotifiedDismiss = false
+
+  override func viewDidDisappear(_ animated: Bool) {
+    super.viewDidDisappear(animated)
+
+    // Always notify on disappearance — hasNotifiedDismiss guards against duplicate calls.
+    // This covers interactive swipe-down, programmatic dismiss, and auto-dismiss after purchase.
+    notifyDismissIfNeeded()
+  }
+
+  deinit {
+    notifyDismissIfNeeded()
+  }
+
+  private func notifyDismissIfNeeded() {
+    guard !hasNotifiedDismiss else { return }
+    hasNotifiedDismiss = true
+    onDismiss?()
+  }
+}
+
 @objc(SubscriptionStoreViewModule)
 class SubscriptionStoreViewModule: NSObject {
 
@@ -29,12 +52,13 @@ class SubscriptionStoreViewModule: NSObject {
         let view = SubscriptionStoreView(groupID: groupID)
           .subscriptionStoreControlStyle(.prominentPicker)
 
-        let hostingController = UIHostingController(rootView: view)
+        let hostingController = DismissAwareHostingController(rootView: view)
         hostingController.modalPresentationStyle = .pageSheet
-
-        rootVC.present(hostingController, animated: true) {
+        hostingController.onDismiss = {
           resolve(nil)
         }
+
+        rootVC.present(hostingController, animated: true)
       }
     } else {
       reject("UNSUPPORTED", "SubscriptionStoreView requires iOS 17.0+", nil)
@@ -59,12 +83,13 @@ class SubscriptionStoreViewModule: NSObject {
         let view = SubscriptionStoreView(productIDs: productIDs.map { Product.ID($0) })
           .subscriptionStoreControlStyle(.prominentPicker)
 
-        let hostingController = UIHostingController(rootView: view)
+        let hostingController = DismissAwareHostingController(rootView: view)
         hostingController.modalPresentationStyle = .pageSheet
-
-        rootVC.present(hostingController, animated: true) {
+        hostingController.onDismiss = {
           resolve(nil)
         }
+
+        rootVC.present(hostingController, animated: true)
       }
     } else {
       reject("UNSUPPORTED", "SubscriptionStoreView requires iOS 17.0+", nil)

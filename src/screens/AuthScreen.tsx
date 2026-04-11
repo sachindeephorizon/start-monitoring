@@ -1,6 +1,5 @@
 /**
- * Full Authentication Screen with 2Factor OTP and Email/Password
- * Copied from old app with all functionality
+ * Full Authentication Screen with OTP login flow.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -20,10 +19,6 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
-import Constants from 'expo-constants';
-import { supabase, supabaseUrl, supabaseAnonKey, TABLES, beginSdkSync, completeSdkSync } from '@/lib/supabase';
-import { apiBaseUrl } from '@/config/environment';
-import { AuthService } from '@/core/auth/auth.service';
 import { useAuth } from '@/core/auth';
 import { ProfileStorage } from '@/core/profile/profile.storage';
 import OptimizedImage from '@/components/optimized/OptimizedImage';
@@ -48,8 +43,6 @@ export function AuthScreen({
   onNavigateToPlans, 
   onSignupSuccess, 
   subscriptionRequired = false, 
-  defaultToSignUp = false,
-  defaultAuthMode,
   comingFromPlanSelection = false, 
   navigation 
 }: AuthScreenProps) {
@@ -59,21 +52,11 @@ export function AuthScreen({
   const otpTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const [loading, setLoading] = useState(false);
   const [phone, setPhone] = useState('');
-  const [countryCode, setCountryCode] = useState('+91'); // Default to India
   const [otpSent, setOtpSent] = useState(false);
   const [otpCode, setOtpCode] = useState('');
   const [otpTimer, setOtpTimer] = useState(0);
-  const [otpSessionId, setOtpSessionId] = useState<string | null>(null);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
   const [safetyCompanionAcknowledged, setSafetyCompanionAcknowledged] = useState(false);
-  const [authMode, setAuthMode] = useState<'phone' | 'email'>(
-    defaultAuthMode || (defaultToSignUp ? 'email' : 'phone')
-  );
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
-  const passwordInputRef = useRef<TextInput>(null);
-  const redirectUrl = (Constants?.expoConfig?.extra as any)?.redirectUrl || 'deephorizon://auth';
 
   // Cleanup on unmount: clear OTP timer interval and mark unmounted
   useEffect(() => {
@@ -719,157 +702,6 @@ export function AuthScreen({
     setOtpSent(false);
     setOtpCode('');
     setOtpTimer(0);
-    setOtpSessionId(null);
-  };
-
-  // Email/Password sign in function
-  const handleEmailSignIn = async () => {
-    if (!email || email.trim().length === 0) {
-      Alert.alert('Error', 'Please enter your email address');
-      return;
-    }
-
-    if (!password || password.trim().length === 0) {
-      Alert.alert('Error', 'Please enter your password');
-      return;
-    }
-
-    // Basic email validation
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email.trim())) {
-      Alert.alert('Error', 'Please enter a valid email address');
-      return;
-    }
-
-    setLoading(true);
-    try {
-      if (__DEV__) console.log('Signing in with email:', email.trim());
-      
-      const result = await AuthService.signIn({
-        email: email.trim(),
-        password,
-      });
-
-      if (!result.success) {
-        throw new Error(result.error || 'Sign in failed');
-      }
-
-      // Get the session. signInWithPassword() was awaited above so the SDK
-      // already has the session — getSession() is instant, no lock contention.
-      console.log('[Email Step 2] Getting session after signIn...');
-      const { data: sessionData } = await supabase.auth.getSession();
-      const signInSession = sessionData?.session;
-      const user = signInSession?.user;
-
-      if (user) {
-        if (__DEV__) console.log('[Email Step 3] Email sign in successful:', user.id);
-
-        const emailLoginUserId = user.id;
-        const emailAccessToken = signInSession.access_token;
-        const restUrl = `${supabaseUrl}/rest/v1`;
-        const restHeaders = {
-          'apikey': supabaseAnonKey,
-          'Authorization': `Bearer ${emailAccessToken}`,
-          'Content-Type': 'application/json',
-        };
-
-        // DB write + cache via raw REST API (same pattern as OTP path)
-        const emailFetchWithTimeout = async (url: string, options: RequestInit = {}, timeoutMs = 10_000) => {
-          const controller = new AbortController();
-          const timer = setTimeout(() => controller.abort(), timeoutMs);
-          try {
-            return await fetch(url, { ...options, signal: controller.signal });
-          } finally {
-            clearTimeout(timer);
-          }
-        };
-
-        try {
-          const selectRes = await emailFetchWithTimeout(
-            `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${emailLoginUserId}&select=id,trial_start_date,created_at`,
-            { headers: restHeaders },
-            8_000
-          );
-          const rows = selectRes.ok ? await selectRes.json() : [];
-          const existingProfile = Array.isArray(rows) && rows.length > 0 ? rows[0] : null;
-
-          if (existingProfile) {
-            const updateData: any = {
-              is_verified: true,
-              safety_companion_acknowledged: safetyCompanionAcknowledged,
-            };
-            if (user.email || email.trim()) updateData.email = user.email || email.trim();
-            if (user.phone) updateData.phone = user.phone;
-            if (!existingProfile.trial_start_date) {
-              updateData.trial_start_date = new Date().toISOString();
-            }
-            const patchRes = await emailFetchWithTimeout(
-              `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${emailLoginUserId}`,
-              { method: 'PATCH', headers: restHeaders, body: JSON.stringify(updateData) },
-              8_000
-            );
-            if (!patchRes.ok) console.error('Profile update error:', await patchRes.text());
-            else console.log('✅ Mobile user profile updated');
-          } else {
-            const profileData = {
-              id: emailLoginUserId,
-              email: user.email || email.trim(),
-              name: user.user_metadata?.name || null,
-              phone: user.phone || null,
-              is_verified: true,
-              safety_companion_acknowledged: safetyCompanionAcknowledged,
-              trial_start_date: new Date().toISOString(),
-            };
-            const insertRes = await emailFetchWithTimeout(
-              `${restUrl}/${TABLES.MOBILE_USERS}`,
-              { method: 'POST', headers: restHeaders, body: JSON.stringify(profileData) },
-              8_000
-            );
-            if (!insertRes.ok) console.error('Profile creation error:', await insertRes.text());
-            else console.log('✅ Mobile user profile created');
-          }
-
-          // Cache full profile
-          const cacheRes = await emailFetchWithTimeout(
-            `${restUrl}/${TABLES.MOBILE_USERS}?id=eq.${emailLoginUserId}&select=id,profile_completion_completed,name,email,phone,date_of_birth,home_address,work_address,emergency_contact_name,emergency_contact_phone,emergency_contact_relationship,blood_type,allergies,passkey_setup_completed,emergency_passkey_hash,trial_start_date,created_at,updated_at`,
-            { headers: restHeaders },
-            8_000
-          );
-          if (cacheRes.ok) {
-            const cacheRows = await cacheRes.json();
-            const fullProfile = Array.isArray(cacheRows) && cacheRows.length > 0 ? cacheRows[0] : null;
-            if (fullProfile) {
-              await ProfileStorage.set(emailLoginUserId, fullProfile);
-              console.log('✅ Profile cached for instant boot');
-            }
-          }
-        } catch (dbErr: any) {
-          console.warn('[Email] REST DB operations failed (non-fatal):', dbErr?.message);
-        }
-
-        // Trigger hydration
-        console.log('[Email Step 4] Calling completeLogin...');
-        // await auth.completeLogin(emailLoginUserId, signInSession.refresh_token
-        //   ? { access_token: signInSession.access_token, refresh_token: signInSession.refresh_token }
-        //   : undefined
-        // );
-      } else {
-        throw new Error('Could not establish session. Please try again.');
-      }
-    } catch (error: any) {
-      console.error('Email sign in error:', error);
-      let errorMessage = 'Sign in failed. Please try again.';
-
-      if (error.message?.includes('Invalid login credentials') || error.message?.includes('Invalid')) {
-        errorMessage = 'Invalid email or password. Please try again.';
-      } else if (error.message) {
-        errorMessage = error.message;
-      }
-
-      Alert.alert('Error', errorMessage);
-    } finally {
-      if (mountedRef.current) setLoading(false);
-    }
   };
 
   return (
@@ -920,10 +752,10 @@ export function AuthScreen({
           {/* Auth Form */}
           <View style={styles.formContainer}>
             <Text style={styles.formTitle}>
-              {authMode === 'email' ? 'Sign In' : (otpSent ? 'Verify OTP' : 'Welcome')}
+              {otpSent ? 'Verify OTP' : 'Welcome'}
             </Text>
 
-            {authMode === 'phone' && !otpSent ? (
+            {!otpSent ? (
               <>
                 {/* Phone Input */}
                 <View style={styles.inputContainer}>
@@ -992,123 +824,6 @@ export function AuthScreen({
                   ) : (
                     <Text style={styles.authButtonText}>Send OTP</Text>
                   )}
-                </TouchableOpacity>
-
-                {/* Sign in using email option */}
-                <TouchableOpacity 
-                  style={styles.toggleButton}
-                  onPress={() => setAuthMode('email')}
-                >
-                  <Text style={styles.toggleText}>Sign in using email</Text>
-                </TouchableOpacity>
-              </>
-            ) : authMode === 'email' ? (
-              <>
-                {/* Email Input */}
-                <View style={styles.inputContainer}>
-                  <MaterialIcons name="email" size={20} color="#666" style={styles.inputIcon} />
-                  <TextInput
-                    style={styles.input}
-                    placeholder="Email Address"
-                    value={email}
-                    onChangeText={setEmail}
-                    keyboardType="email-address"
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="next"
-                    onSubmitEditing={() => passwordInputRef.current?.focus()}
-                    accessibilityLabel="Email address"
-                  />
-                </View>
-
-                {/* Password Input */}
-                <View style={styles.inputContainer}>
-                  <MaterialIcons name="lock" size={20} color="#666" style={styles.inputIcon} />
-                  <TextInput
-                    ref={passwordInputRef}
-                    style={styles.input}
-                    placeholder="Password"
-                    value={password}
-                    onChangeText={setPassword}
-                    secureTextEntry={!showPassword}
-                    autoCapitalize="none"
-                    autoCorrect={false}
-                    returnKeyType="go"
-                    onSubmitEditing={() => {
-                      if (safetyCompanionAcknowledged && email.trim() && password) {
-                        handleEmailSignIn();
-                      }
-                    }}
-                    accessibilityLabel="Password"
-                  />
-                  <TouchableOpacity
-                    style={styles.passwordToggle}
-                    onPress={() => setShowPassword(!showPassword)}
-                  >
-                    <MaterialIcons 
-                      name={showPassword ? "visibility" : "visibility-off"} 
-                      size={20} 
-                      color="#666" 
-                    />
-                  </TouchableOpacity>
-                </View>
-
-                {/* Safety Companion Acknowledgment Checkbox */}
-                <View style={styles.checkboxContainer}>
-                  <TouchableOpacity
-                    style={styles.checkbox}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setSafetyCompanionAcknowledged(!safetyCompanionAcknowledged);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    {safetyCompanionAcknowledged ? (
-                      <MaterialIcons name="check-box" size={28} color="#007AFF" />
-                    ) : (
-                      <MaterialIcons name="check-box-outline-blank" size={28} color="#666" />
-                    )}
-                  </TouchableOpacity>
-                  <TouchableOpacity
-                    style={styles.checkboxLabelContainer}
-                    onPress={() => {
-                      Keyboard.dismiss();
-                      setSafetyCompanionAcknowledged(!safetyCompanionAcknowledged);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                  <Text style={styles.checkboxLabel}>
-                    I understand that Deep Horizon is a safety companion app that provides digital coordination and support. It does not replace police, emergency, or licensed private security services.
-                  </Text>
-                  </TouchableOpacity>
-                </View>
-
-                {/* Sign In Button */}
-                <TouchableOpacity 
-                  style={[
-                    styles.authButton, 
-                    (loading || !safetyCompanionAcknowledged || !email.trim() || !password) && styles.authButtonDisabled
-                  ]}
-                  onPress={handleEmailSignIn}
-                  disabled={loading || !safetyCompanionAcknowledged || !email.trim() || !password}
-                >
-                  {loading ? (
-                    <ActivityIndicator color="#fff" size="small" />
-                  ) : (
-                    <Text style={styles.authButtonText}>Sign In</Text>
-                  )}
-                </TouchableOpacity>
-
-                {/* Back to phone login option */}
-                <TouchableOpacity 
-                  style={styles.toggleButton}
-                  onPress={() => {
-                    setAuthMode('phone');
-                    setEmail('');
-                    setPassword('');
-                  }}
-                >
-                  <Text style={styles.toggleText}>Back to phone login</Text>
                 </TouchableOpacity>
               </>
             ) : (

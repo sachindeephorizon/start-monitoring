@@ -27,7 +27,10 @@ import { useSubscription } from '@/hooks/useSubscription';
 import { useSubscription as useSubscriptionPurchase } from '@/features/subscription/subscription.hooks';
 import PoliciesScreen from './PoliciesScreen';
 // Import native module directly to avoid bundling issues with wrapper
-import { presentSubscriptionStoreViewWithGroupID } from '@/features/subscription/SubscriptionStoreView.native';
+import {
+  presentSubscriptionStoreView,
+  presentSubscriptionStoreViewWithGroupID,
+} from '@/features/subscription/SubscriptionStoreView.native';
 
 interface SubscriptionPlansScreenProps {
   navigation?: any;
@@ -653,13 +656,44 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
             // iOS 17.0+: Use Apple's native SubscriptionStoreView (includes all required info)
             if (Platform.OS === 'ios') {
               const iosVersion = parseInt(Platform.Version as string, 10);
+                     
               if (iosVersion >= 17) {
                 try {
                   setLoading(true);
-                  // Use Apple's native SubscriptionStoreView
-                  // This automatically includes Privacy Policy, Terms of Use, pricing, etc.
-                  // Call native module directly to avoid import/bundling issues
-                  await presentSubscriptionStoreViewWithGroupID();
+                  // Prefer subscription group ID. Some storefront/build combinations can fail
+                  // to resolve group IDs on device, so fall back to product IDs.
+                  try {
+                    await presentSubscriptionStoreViewWithGroupID();
+                    console.log('✅ Presented SubscriptionStoreView with group ID');
+                  } catch (groupError) {
+                    console.warn('⚠️ Group ID store view failed, falling back to product IDs:', groupError);
+                    await presentSubscriptionStoreView();
+                  }
+
+                  console.log('✅ SubscriptionStoreView dismissed, syncing purchases and refreshing subscription');
+                  // On iOS 17+, purchases happen inside native StoreKit UI.
+                  // Sync entitlements to backend after the user dismisses the sheet.
+                  const synced = await IOSPurchaseService.syncPurchasesWithServer();
+                  await refreshSubscription();
+
+                  if (synced) {
+                    Alert.alert(
+                      'Purchase Successful',
+                      `Your ${synced.plan_name} subscription has been activated!`,
+                      [
+                        {
+                          text: 'OK',
+                          onPress: () => {
+                            if (navigation) {
+                              navigation.goBack();
+                            } else if (onBack) {
+                              onBack();
+                            }
+                          },
+                        },
+                      ]
+                    );
+                  }
                 } catch (error: any) {
                   console.error('❌ Error presenting native subscription store:', error);
                   // IMPORTANT: do NOT fall back to the custom paywall on iOS 17+ (App Review requirement).

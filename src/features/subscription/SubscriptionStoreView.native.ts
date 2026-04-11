@@ -53,7 +53,7 @@ export const SUBSCRIPTION_GROUP_ID = '21880668';
  * - All required subscription information
  * 
  * @param productIDs Optional array of product IDs. If not provided, uses default product IDs.
- * @returns Promise that resolves when the view is presented
+ * @returns Promise that resolves after the native store view is dismissed
  */
 export async function presentSubscriptionStoreView(
   productIDs?: string[]
@@ -83,7 +83,7 @@ export async function presentSubscriptionStoreView(
  * in the group and displays them with proper ordering.
  * 
  * @param groupID Optional subscription group ID. If not provided, uses default group ID.
- * @returns Promise that resolves when the view is presented
+ * @returns Promise that resolves after the native store view is dismissed
  */
 export async function presentSubscriptionStoreViewWithGroupID(
   groupID?: string
