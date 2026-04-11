@@ -26,11 +26,6 @@ import { UserInfoModal } from '@/components/modals/UserInfoModal';
 import { useSubscription } from '@/hooks/useSubscription';
 import { useSubscription as useSubscriptionPurchase } from '@/features/subscription/subscription.hooks';
 import PoliciesScreen from './PoliciesScreen';
-// Import native module directly to avoid bundling issues with wrapper
-import {
-  presentSubscriptionStoreView,
-  presentSubscriptionStoreViewWithGroupID,
-} from '@/features/subscription/SubscriptionStoreView.native';
 
 interface SubscriptionPlansScreenProps {
   navigation?: any;
@@ -650,64 +645,42 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
         <TouchableOpacity
           style={[
             styles.subscribeButton,
-            (loading || (Platform.OS !== 'ios' && !selectedPlan)) && styles.subscribeButtonDisabled
+            (loading || !selectedPlan) && styles.subscribeButtonDisabled
           ]}
           onPress={async () => {
-            // iOS 17.0+: Use Apple's native SubscriptionStoreView (includes all required info)
-            if (Platform.OS === 'ios') {
-              const iosVersion = parseInt(Platform.Version as string, 10);
-                     
-              if (iosVersion >= 17) {
-                try {
-                  setLoading(true);
-                  // Prefer subscription group ID. Some storefront/build combinations can fail
-                  // to resolve group IDs on device, so fall back to product IDs.
-                  try {
-                    await presentSubscriptionStoreViewWithGroupID();
-                    console.log('✅ Presented SubscriptionStoreView with group ID');
-                  } catch (groupError) {
-                    console.warn('⚠️ Group ID store view failed, falling back to product IDs:', groupError);
-                    await presentSubscriptionStoreView();
-                  }
-
-                  console.log('✅ SubscriptionStoreView dismissed, syncing purchases and refreshing subscription');
-                  // On iOS 17+, purchases happen inside native StoreKit UI.
-                  // Sync entitlements to backend after the user dismisses the sheet.
-                  const synced = await IOSPurchaseService.syncPurchasesWithServer();
-                  await refreshSubscription();
-
-                  if (synced) {
-                    Alert.alert(
-                      'Purchase Successful',
-                      `Your ${synced.plan_name} subscription has been activated!`,
-                      [
-                        {
-                          text: 'OK',
-                          onPress: () => {
-                            if (navigation) {
-                              navigation.goBack();
-                            } else if (onBack) {
-                              onBack();
-                            }
-                          },
-                        },
-                      ]
-                    );
-                  }
-                } catch (error: any) {
-                  console.error('❌ Error presenting native subscription store:', error);
-                  // IMPORTANT: do NOT fall back to the custom paywall on iOS 17+ (App Review requirement).
-                  Alert.alert('Error', 'Unable to load subscription options. Please try again.');
-                } finally {
-                  setLoading(false);
-                }
-                return;
-              }
-            }
-
-            // Fallback: Custom subscription flow for older iOS versions and Android
             if (!selectedPlan) {
               Alert.alert('Select a Plan', 'Please select a plan first.');
+              return;
+            }
+
+            if (Platform.OS === 'ios') {
+              try {
+                setLoading(true);
+                const result = await purchaseSubscription(selectedPlan);
+                if (result.success && result.subscription) {
+                  await refreshSubscription();
+                  Alert.alert(
+                    'Purchase Successful',
+                    'Your subscription has been activated successfully!',
+                    [
+                      {
+                        text: 'OK',
+                        onPress: () => {
+                          if (navigation) navigation.goBack();
+                          else if (onBack) onBack();
+                        },
+                      },
+                    ]
+                  );
+                } else if (result.error && !result.error.includes('cancel')) {
+                  Alert.alert('Purchase Failed', result.error);
+                }
+              } catch (error: any) {
+                console.error('❌ iOS purchase error:', error);
+                Alert.alert('Purchase Error', error.message || 'An error occurred during purchase');
+              } finally {
+                setLoading(false);
+              }
               return;
             }
 
@@ -719,7 +692,7 @@ const SubscriptionPlansScreen: React.FC<SubscriptionPlansScreenProps> = ({
               Alert.alert('Error', 'Failed to process subscription. Please try again.');
             }
           }}
-          disabled={loading || (Platform.OS !== 'ios' && !selectedPlan)}
+          disabled={loading || !selectedPlan}
           activeOpacity={0.7}
         >
           {loading ? (

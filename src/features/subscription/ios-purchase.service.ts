@@ -399,7 +399,7 @@ export const IOSPurchaseService = {
       if (!localSubscriptionId) {
         return {
           success: false,
-          error: 'Missing local subscription id from backend initiate response',
+          error: "Missing local subscription id from backend initiate response",
         };
       }
 
@@ -411,58 +411,6 @@ export const IOSPurchaseService = {
       }
 
       console.log('[iOS Purchase] Starting purchase for product:', productId);
-
-      // Preflight: ensure SKU exists for this app/account before starting purchase
-      // If this fails with empty result, it almost always means:
-      // - Bundle ID mismatch (dev bundle id vs App Store Connect app), or
-      // - Product not "Cleared for Sale"/missing pricing/territories, or
-      // - App Store Connect agreements not active, or
-      // - Propagation delay after creating the product, or
-      // - Testing on simulator without StoreKit config, or
-      // - Not signed in with Sandbox account
-      try {
-        console.log('[iOS Purchase] Preflight check: Fetching product:', productId);
-        const preflightSubs = await this.fetchSubscriptionProducts([productId]);
-        console.log('[iOS Purchase] Preflight response:', JSON.stringify(preflightSubs, null, 2));
-        
-        console.log('[iOS Purchase] Filtered subscription products:', preflightSubs.length);
-        
-        if (preflightSubs.length === 0) {
-          console.error('[iOS Purchase] ❌ SKU not found via StoreKit preflight');
-          console.error('[iOS Purchase] Product ID:', productId);
-          console.error('[iOS Purchase] Plan ID:', plan.id);
-
-          // If running on simulator, fail fast with actionable guidance.
-          // StoreKit requires either a real device or Xcode StoreKit testing configuration.
-          if (!Device.isDevice) {
-            return {
-              success: false,
-              error:
-                'In-App Purchases are not available on the iOS simulator unless you configure StoreKit Testing.\n\n' +
-                'Fix:\n' +
-                '• Install this build on a real iPhone (recommended), OR\n' +
-                '• In Xcode, set a StoreKit Configuration file for the scheme.\n\n' +
-                `Product ID: ${productId}`,
-            };
-          }
-
-          // On a real device, don’t hard-fail preflight; proceed to requestPurchase.
-          // Some StoreKit setups intermittently return empty products even though purchase can still be initiated.
-          console.warn('[iOS Purchase] Continuing to purchase attempt despite empty preflight (device).');
-        }
-        
-        if (preflightSubs.length > 0) {
-          console.log('[iOS Purchase] ✅ Preflight check passed. Product found:', {
-            id: (preflightSubs[0] as any)?.id,
-            productId: (preflightSubs[0] as any)?.productId,
-            type: (preflightSubs[0] as any)?.type,
-          });
-        }
-      } catch (e) {
-        console.error('[iOS Purchase] ❌ SKU preflight check failed:', e);
-        console.error('[iOS Purchase] Error details:', JSON.stringify(e, null, 2));
-        console.warn('[iOS Purchase] Continuing to purchase attempt...');
-      }
 
       // Set up purchase listener BEFORE requesting purchase
       let purchaseResolve: ((value: { success: boolean; error?: string; purchase?: Purchase }) => void) | null = null;
@@ -1018,11 +966,18 @@ export const IOSPurchaseService = {
         userId: shortId(userId),
       });
 
-      const subscription = await confirmIosSubscription({
-        userId,
+      console.log('[iOS Purchase] Sending JWS data:', { userId,
         planId: plan.id,
         localSubscriptionId,
-        receiptData: receiptData || transactionJws || '',
+        receiptData: receiptData || '',
+        hasTransactionJws: Boolean(transactionJws),
+      });
+
+      const subscription = await confirmIosSubscription({
+        planId: plan.id,
+        localSubscriptionId,
+        receiptData: receiptData || '',
+        signedTransactionInfo: transactionJws || undefined,
       });
 
       if (!subscription?.id) {
