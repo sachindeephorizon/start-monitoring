@@ -28,7 +28,7 @@ interface LoginScreenProps {
 }
 
 const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
-  const { signIn } = useAuth();
+  // const { signIn } = useAuth();
   const [loading, setLoading] = useState(false);
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
@@ -59,14 +59,14 @@ const LoginScreen: React.FC<LoginScreenProps> = ({ navigation }) => {
 
     setLoading(true);
     try {
-      const result = await signIn({
-        email: email.trim(),
-        password: password,
-      });
+      // const result = await signIn({
+      //   email: email.trim(),
+      //   password: password,
+      // });
 
-      if (!result.success) {
-        throw new Error(result.error || 'Sign in failed');
-      }
+      // if (!result.success) {
+      //   throw new Error(result.error || 'Sign in failed');
+      // }
 
       // Navigation will be handled by RootNavigator based on auth state
       // No need to navigate manually

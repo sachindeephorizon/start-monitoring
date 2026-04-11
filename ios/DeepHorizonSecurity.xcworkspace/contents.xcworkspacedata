@@ -2,6 +2,9 @@
 <Workspace
    version = "1.0">
    <FileRef
+      location = "group:dev-client.storekit">
+   </FileRef>
+   <FileRef
       location = "group:DeepHorizonSecurity.xcodeproj">
    </FileRef>
    <FileRef

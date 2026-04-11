@@ -10,7 +10,7 @@ import {
   ActivityIndicator,
   Platform,
 } from 'react-native';
-import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useSubscription } from '@/hooks/useSubscription';
 import { styles } from '@/styles/FamilyScreen.styles';
@@ -21,40 +21,26 @@ interface FamilyScreenProps {
 }
 
 const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
-  const insets = useSafeAreaInsets();
   const {
     hasAccess,
     subscription,
     currentPlan,
     isFamilyPlan,
+    isFamilyPlanOwner,
     isLoading,
     familyMembers,
     familyLoading,
     familyError,
     addFamilyMember,
     removeFamilyMember,
-    loadFamilyMembers,
     refresh,
   } = useSubscription();
 
   const [showAddMemberModal, setShowAddMemberModal] = useState(false);
   const [newMember, setNewMember] = useState({
-    phone: '+91',
-    name: '',
-    email: '',
+    phone: '',
   });
-  const [hasCheckedAccess, setHasCheckedAccess] = useState(false);
   const focusRefreshInFlightRef = useRef(false);
-
-  // Only refresh if we haven't checked access yet and subscription is not loading
-  // Optimized: Family members will be loaded automatically by useSubscription hook
-  // when subscription is loaded, so we don't need to call refresh() here
-  useEffect(() => {
-    // Mark as checked once subscription loading is complete
-    if (!isLoading) {
-      setHasCheckedAccess(true);
-    }
-  }, [isLoading]);
 
   // Debug logging for family members
   useEffect(() => {
@@ -69,15 +55,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
     });
   }, [isFamilyPlan, subscription?.id, familyMembers.length, familyLoading, familyError, hasAccess, currentPlan?.type]);
 
-  // Manually trigger family members load if we have a family plan but no members loaded
-  useEffect(() => {
-    if (isFamilyPlan && subscription?.id && !familyLoading && familyMembers.length === 0) {
-      console.log('[FamilyScreen] Manually triggering family members load');
-      loadFamilyMembers(subscription.id).catch(err => {
-        console.error('[FamilyScreen] Error manually loading family members:', err);
-      });
-    }
-  }, [isFamilyPlan, subscription?.id, familyLoading, familyMembers.length, loadFamilyMembers]);
+  console.log('[FamilyScreen] Render', {familyMembers});
 
   // iOS-only: refresh subscription/family data on focus (prevents "updates only after swipe up")
   useEffect(() => {
@@ -97,7 +75,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
     });
 
     return unsubscribe;
-  }, [navigation, refresh, isLoading, familyLoading]);
+  }, [navigation, refresh]);
 
   const handleAddFamilyMember = async () => {
     const phoneE164 = indianPhoneToE164(newMember.phone);
@@ -106,12 +84,12 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
       return;
     }
 
-    const result = await addFamilyMember(phoneE164, newMember.name || undefined, newMember.email || undefined);
+    const result = await addFamilyMember(phoneE164);
     
     if (result.success) {
-      Alert.alert('Success', 'Family member added successfully!');
+      Alert.alert('Invite Sent', result.message || 'Invite sent. User will be auto-added after they sign up/login.');
       setShowAddMemberModal(false);
-      setNewMember({ phone: '+91', name: '', email: '' });
+      setNewMember({ phone: '+91' });
     } else {
       Alert.alert('Error', result.error || 'Failed to add family member');
     }
@@ -194,7 +172,9 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
   }
 
   const maxMembers = currentPlan?.max_members || 5;
-  const canAddMore = familyMembers.length < maxMembers;
+  const activeMemberRows = familyMembers.filter((member) => member.type === 'MEMBER' && member.status !== 'REMOVED');
+  const pendingInviteRows = familyMembers.filter((member) => member.type === 'INVITE' && member.status === 'PENDING');
+  const canAddMore = isFamilyPlanOwner && activeMemberRows.length < maxMembers;
 
   return (
     <SafeAreaView edges={['top']} style={styles.container}>
@@ -227,19 +207,26 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
           </View>
         )}
 
+        {!isLoading && !familyLoading && <>
+
         {/* Info Banner */}
         <View style={styles.infoBanner}>
           <MaterialIcons name="info" size={20} color="#4BA8FF" />
           <Text style={styles.infoText}>
-            Add up to {maxMembers} family members (including yourself) to share your subscription.
+            {isFamilyPlanOwner
+              ? `Invite up to ${maxMembers} family members (including yourself) to share your subscription.`
+              : 'You are part of a family plan managed by the primary account holder.'}
           </Text>
         </View>
 
         {/* Family Members Count */}
         <View style={styles.countSection}>
           <Text style={styles.countText}>
-            {familyMembers.length} / {maxMembers} members
+            {activeMemberRows.length} / {maxMembers} active members
           </Text>
+          {pendingInviteRows.length > 0 && (
+            <Text style={[styles.countText, { marginTop: 4 }]}>Pending invites: {pendingInviteRows.length}</Text>
+          )}
         </View>
 
         {/* Add Member Button */}
@@ -249,7 +236,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
             onPress={() => setShowAddMemberModal(true)}
           >
             <MaterialIcons name="add" size={24} color="#fff" />
-            <Text style={styles.addMemberButtonText}>Add Family Member</Text>
+            <Text style={styles.addMemberButtonText}>Invite by Phone</Text>
           </TouchableOpacity>
         )}
 
@@ -268,12 +255,26 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
               <View key={member.id} style={styles.memberCard}>
                 <View style={styles.memberInfo}>
                   <View style={styles.memberHeader}>
-                    <MaterialIcons name="person" size={24} color="#4BA8FF" />
+                    <MaterialIcons
+                      name={member.type === 'INVITE' ? 'schedule' : 'person'}
+                      size={24}
+                      color={member.type === 'INVITE' ? '#f39c12' : '#4BA8FF'}
+                    />
                     <Text style={styles.memberName}>
-                      {member.name || 'Unnamed Member'}
+                      {member.type === 'INVITE'
+                        ? 'Pending Invite'
+                        : (member.name || 'Member')}
                     </Text>
                   </View>
                   <Text style={styles.memberPhone}>{member.phone}</Text>
+                  {member.type === 'MEMBER' && member.role && (
+                    <Text style={styles.memberActivated}>Role: {member.role}</Text>
+                  )}
+                  {member.type === 'INVITE' && member.expiresAt && (
+                    <Text style={styles.memberActivated}>
+                      Expires: {new Date(member.expiresAt).toLocaleDateString()}
+                    </Text>
+                  )}
                   {member.email && (
                     <Text style={styles.memberEmail}>{member.email}</Text>
                   )}
@@ -283,12 +284,14 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
                     </Text>
                   )}
                 </View>
-                <TouchableOpacity
-                  style={styles.removeMemberButton}
-                  onPress={() => handleRemoveFamilyMember(member.id, member.name || 'this member')}
-                >
-                  <MaterialIcons name="delete" size={20} color="#e74c3c" />
-                </TouchableOpacity>
+                {isFamilyPlanOwner && member.type === 'MEMBER' && member.role !== 'OWNER' && (
+                  <TouchableOpacity
+                    style={styles.removeMemberButton}
+                    onPress={() => handleRemoveFamilyMember(member.id, member.name || 'this member')}
+                  >
+                    <MaterialIcons name="delete" size={20} color="#e74c3c" />
+                  </TouchableOpacity>
+                )}
               </View>
             ))}
           </View>
@@ -304,6 +307,8 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
             • Maximum {maxMembers} members per family plan
           </Text>
         </View>
+
+        </>}
       </ScrollView>
 
       {/* Add Family Member Modal */}
@@ -316,7 +321,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
         <View style={styles.modalOverlay}>
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add Family Member</Text>
+              <Text style={styles.modalTitle}>Invite Family Member</Text>
               <TouchableOpacity onPress={() => setShowAddMemberModal(false)}>
                 <MaterialIcons name="close" size={24} color="#7f8c8d" />
               </TouchableOpacity>
@@ -328,35 +333,16 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
                 <TextInput
                   style={styles.input}
                   value={newMember.phone}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, phone: normalizeIndianPhoneInput(text) }))}
-                  placeholder="+91 XXXXX XXXXX"
+                  onChangeText={(text) => setNewMember(prev => ({ ...prev, phone: text }))}
+                  placeholder="XXXXX XXXXX"
                   keyboardType="phone-pad"
                   autoCapitalize="none"
                 />
               </View>
 
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Name (Optional)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newMember.name}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, name: text }))}
-                  placeholder="Enter member name"
-                  autoCapitalize="words"
-                />
-              </View>
-
-              <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Email (Optional)</Text>
-                <TextInput
-                  style={styles.input}
-                  value={newMember.email}
-                  onChangeText={(text) => setNewMember(prev => ({ ...prev, email: text }))}
-                  placeholder="Enter member email"
-                  keyboardType="email-address"
-                  autoCapitalize="none"
-                />
-              </View>
+              <Text style={styles.helpText}>
+                Invite sent users are auto-added after they sign up/login with this same phone number.
+              </Text>
             </View>
 
             <View style={styles.modalActions}>
@@ -364,7 +350,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
                 style={styles.cancelButton}
                 onPress={() => {
                   setShowAddMemberModal(false);
-                  setNewMember({ phone: '+91', name: '', email: '' });
+                  setNewMember({ phone: '+91' });
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
@@ -374,7 +360,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
                 onPress={handleAddFamilyMember}
                 disabled={!newMember.phone.trim()}
               >
-                <Text style={styles.addButtonText}>Add Member</Text>
+                <Text style={styles.addButtonText}>Send Invite</Text>
               </TouchableOpacity>
             </View>
           </View>
