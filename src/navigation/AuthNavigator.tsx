@@ -16,7 +16,6 @@ import { AuthScreen } from '@/screens/AuthScreen';
 import PoliciesScreen from '@/screens/PoliciesScreen';
 import PublicPlansScreen from '@/screens/PublicPlansScreen';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { useAuth } from '@/core/auth';
 
 const Stack = createStackNavigator();
 
@@ -30,7 +29,6 @@ export type AuthStackParamList = {
 const ONBOARDING_COMPLETED_KEY = 'deephorizon.onboarding.completed';
 
 export function AuthNavigator() {
-  const auth = useAuth();
   const [initialRoute, setInitialRoute] = useState<'Onboarding' | 'Login' | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -58,7 +56,7 @@ export function AuthNavigator() {
     };
 
     checkOnboardingStatus();
-  }, [auth.status]);
+  }, []);
 
   // Mark onboarding as completed
   const markOnboardingCompleted = async () => {

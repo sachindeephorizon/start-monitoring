@@ -4,6 +4,7 @@ import {
   disableEmergencyById,
   getActiveEmergencyContext,
   getEmergencyContextById,
+  rejoinEmergencyCall,
   triggerEmergency,
   updateEmergencyStatus,
 } from '@/api/emergency';
@@ -110,6 +111,25 @@ export const EmergencyService = {
         success: false,
         error: normalizeErrorMessage(error, 'Failed to abort emergency.'),
         statusCode: toStatusCode(error),
+      };
+    }
+  },
+
+  async rejoin(
+    emergencyId: string,
+    callId?: string,
+  ): Promise<{ success: boolean; callId?: string; callToken?: string; error?: string }> {
+    try {
+      const response = await rejoinEmergencyCall(emergencyId, callId);
+      return {
+        success: true,
+        callId: response.data?.callId,
+        callToken: response.data?.callToken,
+      };
+    } catch (error: any) {
+      return {
+        success: false,
+        error: normalizeErrorMessage(error, 'Failed to notify agent for rejoin.'),
       };
     }
   },

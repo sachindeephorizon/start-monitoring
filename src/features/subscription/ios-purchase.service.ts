@@ -120,6 +120,22 @@ function getPlanMeta(planId: string): SubscriptionPlanInput | null {
   return { id: planId, ...meta };
 }
 
+const shortId = (value?: string | null): string => {
+  if (!value) return 'n/a';
+  const v = String(value);
+  if (v.length <= 10) return v;
+  return `${v.slice(0, 6)}...${v.slice(-4)}`;
+};
+
+const iosPurchaseLog = (step: string, details?: Record<string, unknown>) => {
+  const ts = new Date().toISOString();
+  if (details) {
+    console.log(`[iOS Purchase][${ts}][${step}]`, details);
+    return;
+  }
+  console.log(`[iOS Purchase][${ts}][${step}]`);
+};
+
 function mapBackendPlanToSubscriptionPlanInput(plan: BackendPlan): SubscriptionPlanInput {
   return {
     id: plan.id,
@@ -319,6 +335,14 @@ export const IOSPurchaseService = {
   async purchaseSubscription(
     plan: SubscriptionPlanInput
   ): Promise<PaymentVerificationResult> {
+    iosPurchaseLog('purchase:start', {
+      platform: Platform.OS,
+      isDevice: Device.isDevice,
+      iosVersion: Platform.OS === 'ios' ? Platform.Version : undefined,
+      planId: plan?.id,
+      storekitPlanId: plan?.storekitPlanId || null,
+    });
+
     if (Platform.OS !== 'ios') {
       return {
         success: false,
@@ -329,11 +353,16 @@ export const IOSPurchaseService = {
     try {
       const userId = await getCurrentUserId();
       if (!userId) {
+        iosPurchaseLog('purchase:missing-user');
         return {
           success: false,
           error: 'User not authenticated',
         };
       }
+
+      iosPurchaseLog('purchase:user-resolved', {
+        userId: shortId(userId),
+      });
 
       const initiated = await initiateUserSubscription({
         userId,
@@ -352,6 +381,13 @@ export const IOSPurchaseService = {
           IOS_PRODUCT_IDS[plan.id] ||
           ''
       ).trim();
+
+      iosPurchaseLog('purchase:initiate-response', {
+        initiatedId: shortId(String((initiated as any)?.id || '')),
+        localSubscriptionId: shortId(localSubscriptionId),
+        productId,
+        paymentGatewayType: (initiated as any)?.paymentGatewayPayload?.gatewayType || null,
+      });
       
       if (!productId) {
         return {
@@ -363,7 +399,7 @@ export const IOSPurchaseService = {
       if (!localSubscriptionId) {
         return {
           success: false,
-          error: 'Missing local subscription id from backend initiate response',
+          error: "Missing local subscription id from backend initiate response",
         };
       }
 
@@ -375,58 +411,6 @@ export const IOSPurchaseService = {
       }
 
       console.log('[iOS Purchase] Starting purchase for product:', productId);
-
-      // Preflight: ensure SKU exists for this app/account before starting purchase
-      // If this fails with empty result, it almost always means:
-      // - Bundle ID mismatch (dev bundle id vs App Store Connect app), or
-      // - Product not "Cleared for Sale"/missing pricing/territories, or
-      // - App Store Connect agreements not active, or
-      // - Propagation delay after creating the product, or
-      // - Testing on simulator without StoreKit config, or
-      // - Not signed in with Sandbox account
-      try {
-        console.log('[iOS Purchase] Preflight check: Fetching product:', productId);
-        const preflightSubs = await this.fetchSubscriptionProducts([productId]);
-        console.log('[iOS Purchase] Preflight response:', JSON.stringify(preflightSubs, null, 2));
-        
-        console.log('[iOS Purchase] Filtered subscription products:', preflightSubs.length);
-        
-        if (preflightSubs.length === 0) {
-          console.error('[iOS Purchase] ❌ SKU not found via StoreKit preflight');
-          console.error('[iOS Purchase] Product ID:', productId);
-          console.error('[iOS Purchase] Plan ID:', plan.id);
-
-          // If running on simulator, fail fast with actionable guidance.
-          // StoreKit requires either a real device or Xcode StoreKit testing configuration.
-          if (!Device.isDevice) {
-            return {
-              success: false,
-              error:
-                'In-App Purchases are not available on the iOS simulator unless you configure StoreKit Testing.\n\n' +
-                'Fix:\n' +
-                '• Install this build on a real iPhone (recommended), OR\n' +
-                '• In Xcode, set a StoreKit Configuration file for the scheme.\n\n' +
-                `Product ID: ${productId}`,
-            };
-          }
-
-          // On a real device, don’t hard-fail preflight; proceed to requestPurchase.
-          // Some StoreKit setups intermittently return empty products even though purchase can still be initiated.
-          console.warn('[iOS Purchase] Continuing to purchase attempt despite empty preflight (device).');
-        }
-        
-        if (preflightSubs.length > 0) {
-          console.log('[iOS Purchase] ✅ Preflight check passed. Product found:', {
-            id: (preflightSubs[0] as any)?.id,
-            productId: (preflightSubs[0] as any)?.productId,
-            type: (preflightSubs[0] as any)?.type,
-          });
-        }
-      } catch (e) {
-        console.error('[iOS Purchase] ❌ SKU preflight check failed:', e);
-        console.error('[iOS Purchase] Error details:', JSON.stringify(e, null, 2));
-        console.warn('[iOS Purchase] Continuing to purchase attempt...');
-      }
 
       // Set up purchase listener BEFORE requesting purchase
       let purchaseResolve: ((value: { success: boolean; error?: string; purchase?: Purchase }) => void) | null = null;
@@ -451,23 +435,30 @@ export const IOSPurchaseService = {
             id: (purchase as any).id,
           });
 
-          // PurchaseState is a string union in v14: 'pending' | 'purchased' | 'unknown'
+          // PurchaseState in react-native-iap v14: 'pending' | 'purchased' | 'unknown'
+          // On iOS: purchaseUpdatedListener fires only for verified StoreKit transactions.
+          // The `purchaseState` field is Android-specific; on iOS it may arrive as
+          // 'purchased' (if OpenIAP sets it) or 'unknown' (Nitro C++ default when absent).
+          // Accept any non-pending state on iOS as a successful purchase.
           const state = (purchase as any).purchaseState as 'pending' | 'purchased' | 'unknown' | undefined;
-          if (state === 'purchased') {
+          const isSuccessfulOnIOS = Platform.OS === 'ios' && state !== 'pending';
+          const isSuccessfulOnAndroid = Platform.OS !== 'ios' && state === 'purchased';
+
+          if (isSuccessfulOnIOS || isSuccessfulOnAndroid) {
             purchaseUpdateSubscription.remove();
             purchaseErrorSubscription.remove();
             if (purchaseResolve) {
               purchaseResolve({ success: true, purchase });
             }
           } else if (state === 'unknown') {
-            // Treat unknown as failure (defensive)
+            // Android only: 'unknown' state means a genuine payment failure
             purchaseUpdateSubscription.remove();
             purchaseErrorSubscription.remove();
             if (purchaseResolve) {
               purchaseResolve({ success: false, error: 'Purchase failed', purchase });
             }
           }
-          // pending -> keep waiting
+          // pending -> keep waiting (deferred / parental approval)
         } catch (e) {
           purchaseUpdateSubscription.remove();
           purchaseErrorSubscription.remove();
@@ -504,6 +495,11 @@ export const IOSPurchaseService = {
         // Production: pass appAccountToken (UUID) so App Store Server Notifications can reliably map
         // renewals/cancellations back to the correct backend user.
         const appAccountToken = userId && userId.length >= 32 ? userId : undefined;
+
+        iosPurchaseLog('purchase:requestPurchase', {
+          productId,
+          hasAppAccountToken: Boolean(appAccountToken),
+        });
 
         await requestPurchase({
           type: 'subs',
@@ -553,6 +549,12 @@ export const IOSPurchaseService = {
       });
 
       const purchaseResult = await Promise.race([purchasePromise, timeoutPromise]);
+
+      iosPurchaseLog('purchase:listener-result', {
+        success: purchaseResult.success,
+        error: purchaseResult.error || null,
+        hasPurchase: Boolean(purchaseResult.purchase),
+      });
 
       if (!purchaseResult.success || !purchaseResult.purchase) {
         // Production-ready behavior: if StoreKit says it's already owned, sync entitlements instead
@@ -619,6 +621,10 @@ export const IOSPurchaseService = {
       // In Xcode StoreKit testing, receipts often aren't available, so JWS is the correct path.
       if (!transactionJws && !receipt) {
         const isSimulatorLike = !Device.isDevice;
+        iosPurchaseLog('purchase:verification-artifact-missing', {
+          isSimulatorLike,
+          productId,
+        });
         return {
           success: false,
           error: isSimulatorLike
@@ -626,6 +632,12 @@ export const IOSPurchaseService = {
             : 'Unable to obtain App Store verification data. Please try again.',
         };
       }
+
+      iosPurchaseLog('purchase:verification-artifact-ready', {
+        hasTransactionJws: Boolean(transactionJws),
+        hasReceipt: Boolean(receipt),
+        transactionId: shortId(String((purchase as any).transactionId || (purchase as any).id || '')),
+      });
 
       // Verify purchase with server
       const verificationResult = await this.verifyPurchase(
@@ -642,6 +654,10 @@ export const IOSPurchaseService = {
 
       return verificationResult;
     } catch (error: any) {
+      iosPurchaseLog('purchase:exception', {
+        message: error?.message || 'unknown',
+        code: error?.code || null,
+      });
       console.error('[iOS Purchase] Purchase failed:', error);
 
       // Handle user cancellation
@@ -676,6 +692,11 @@ export const IOSPurchaseService = {
       const userId = await getCurrentUserId();
       if (!userId) return null;
 
+      iosPurchaseLog('sync:start', {
+        userId: shortId(userId),
+        isDevice: Device.isDevice,
+      });
+
       // Ensure StoreKit connection exists (idempotent).
       try {
         await initConnection();
@@ -697,6 +718,9 @@ export const IOSPurchaseService = {
           alsoPublishToEventListenerIOS: false,
         } as any)
         if (Array.isArray(res)) purchases = res as any
+        iosPurchaseLog('sync:available-purchases-active', {
+          count: Array.isArray(res) ? res.length : 0,
+        });
       } catch (e) {
         console.warn('[iOS Purchase] getAvailablePurchases(active) failed (non-fatal):', e)
       }
@@ -708,6 +732,9 @@ export const IOSPurchaseService = {
             alsoPublishToEventListenerIOS: false,
           } as any)
           if (Array.isArray(res)) purchases = res as any
+          iosPurchaseLog('sync:available-purchases-all', {
+            count: Array.isArray(res) ? res.length : 0,
+          });
         } catch (e) {
           console.warn('[iOS Purchase] getAvailablePurchases(all) failed (non-fatal):', e)
         }
@@ -719,17 +746,29 @@ export const IOSPurchaseService = {
           // Load dynamically and use if available.
           const iap = await import('react-native-iap')
           const getHistory = (iap as any).getPurchaseHistory
-          if (typeof getHistory !== 'function') {
-            throw new Error('getPurchaseHistory not available in this build')
+          if (typeof getHistory === 'function') {
+            const res = await getHistory()
+            if (Array.isArray(res)) purchases = res as any
+            iosPurchaseLog('sync:purchase-history', {
+              count: Array.isArray(res) ? res.length : 0,
+            });
+          } else {
+            // Optional API in some RN-IAP builds; keep this path silent.
+            console.log('[iOS Purchase] getPurchaseHistory unavailable in this build (non-fatal).')
           }
-          const res = await getHistory()
-          if (Array.isArray(res)) purchases = res as any
         } catch (e) {
-          console.warn('[iOS Purchase] getPurchaseHistory failed (non-fatal):', e)
+          console.warn('[iOS Purchase] getPurchaseHistory call failed (non-fatal):', e)
         }
       }
 
-      if (!Array.isArray(purchases) || purchases.length === 0) return null
+      if (!Array.isArray(purchases) || purchases.length === 0) {
+        iosPurchaseLog('sync:no-purchases-found');
+        return null
+      }
+
+      iosPurchaseLog('sync:purchases-found', {
+        count: purchases.length,
+      });
 
       // Prefer verifying each active entitlement; backend will upsert subscription.
       // Sort by latest transactionDate if present.
@@ -744,6 +783,11 @@ export const IOSPurchaseService = {
       for (const p of sorted) {
         const pid = (p as any)?.productId;
         if (typeof pid !== 'string' || !pid) continue;
+
+        iosPurchaseLog('sync:processing-purchase', {
+          productId: pid,
+          transactionId: shortId(String((p as any)?.transactionId || (p as any)?.id || '')),
+        });
 
         const plan = await resolvePlanByProductId(pid);
         if (!plan) continue;
@@ -787,7 +831,12 @@ export const IOSPurchaseService = {
           }
         }
 
-        if (!receipt) continue;
+        if (!transactionJws && !receipt) {
+          iosPurchaseLog('sync:skip-no-artifact', {
+            productId: pid,
+          });
+          continue;
+        }
 
         const txId = String((p as any)?.transactionId || (p as any)?.id || '');
         const res = await this.verifyPurchase(
@@ -801,13 +850,23 @@ export const IOSPurchaseService = {
 
         if (res.success && res.subscription) {
           latest = res.subscription;
+          iosPurchaseLog('sync:verified-latest', {
+            subscriptionId: shortId(res.subscription.id),
+            planId: res.subscription.plan_id,
+          });
           // If we successfully synced the most recent entitlement, we can stop early.
           break;
         }
       }
 
+      iosPurchaseLog('sync:done', {
+        synced: Boolean(latest),
+      });
       return latest;
     } catch (e) {
+      iosPurchaseLog('sync:exception', {
+        message: (e as any)?.message || 'unknown',
+      });
       console.warn('[iOS Purchase] syncPurchasesWithServer failed:', e);
       return null;
     }
@@ -825,7 +884,11 @@ export const IOSPurchaseService = {
           console.log('[iOS Purchase] Purchase updated:', purchase);
 
           const state = (purchase as any).purchaseState as 'pending' | 'purchased' | 'unknown' | undefined;
-          if (state === 'purchased') {
+          // On iOS, purchaseUpdatedListener fires only for verified StoreKit transactions.
+          // Accept any non-pending state on iOS as success (state may be 'unknown' by default).
+          const isSuccessfulOnIOS = Platform.OS === 'ios' && state !== 'pending';
+          const isSuccessfulOnAndroid = Platform.OS !== 'ios' && state === 'purchased';
+          if (isSuccessfulOnIOS || isSuccessfulOnAndroid) {
             // Purchase successful
             try {
               await finishTransaction({ purchase, isConsumable: false });
@@ -833,7 +896,7 @@ export const IOSPurchaseService = {
             purchaseUpdateSubscription.remove();
             resolve({ success: true, purchase });
           } else if (state === 'unknown') {
-            // Purchase failed/unknown
+            // Android only: 'unknown' is a genuine failure
             try {
               await finishTransaction({ purchase, isConsumable: false });
             } catch {}
@@ -878,18 +941,43 @@ export const IOSPurchaseService = {
       console.log('[iOS Purchase] Verifying purchase with server...');
 
       const receiptData = verification.receipt?.trim();
-      if (!receiptData) {
+      const transactionJws = verification.transactionJws?.trim();
+
+      if (!receiptData && !transactionJws) {
+        iosPurchaseLog('verify:missing-artifact', {
+          productId,
+          transactionId: shortId(transactionId),
+          planId: plan.id,
+          localSubscriptionId: shortId(localSubscriptionId),
+        });
         return {
           success: false,
-          error: 'Missing receipt data for iOS confirmation',
+          error: 'Missing App Store verification data for iOS confirmation',
         };
       }
 
-      const subscription = await confirmIosSubscription({
-        userId,
+      iosPurchaseLog('verify:request', {
+        productId,
+        transactionId: shortId(transactionId),
+        planId: plan.id,
+        localSubscriptionId: shortId(localSubscriptionId),
+        hasReceipt: Boolean(receiptData),
+        hasTransactionJws: Boolean(transactionJws),
+        userId: shortId(userId),
+      });
+
+      console.log('[iOS Purchase] Sending JWS data:', { userId,
         planId: plan.id,
         localSubscriptionId,
-        receiptData,
+        receiptData: receiptData || '',
+        hasTransactionJws: Boolean(transactionJws),
+      });
+
+      const subscription = await confirmIosSubscription({
+        planId: plan.id,
+        localSubscriptionId,
+        receiptData: receiptData || '',
+        signedTransactionInfo: transactionJws || undefined,
       });
 
       if (!subscription?.id) {
@@ -900,11 +988,19 @@ export const IOSPurchaseService = {
       }
 
       console.log('[iOS Purchase] Purchase verified successfully');
+      iosPurchaseLog('verify:success', {
+        subscriptionId: shortId(subscription.id),
+        status: subscription.status,
+      });
       return {
         success: true,
         subscription: mapApiSubscriptionToAppSubscription(subscription),
       };
     } catch (error: any) {
+      iosPurchaseLog('verify:failure', {
+        message: error?.message || 'unknown',
+        status: error?.response?.status || null,
+      });
       console.error('[iOS Purchase] Error verifying purchase:', error);
       return {
         success: false,
@@ -929,8 +1025,14 @@ export const IOSPurchaseService = {
     try {
       console.log('[iOS Purchase] Restoring purchases (and syncing to backend)...');
       const latest = await this.syncPurchasesWithServer();
+      iosPurchaseLog('restore:done', {
+        restoredCount: latest ? 1 : 0,
+      });
       return latest ? [latest] : [];
     } catch (error) {
+      iosPurchaseLog('restore:failure', {
+        message: (error as any)?.message || 'unknown',
+      });
       console.error('[iOS Purchase] Failed to restore purchases:', error);
       return [];
     }

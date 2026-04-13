@@ -51,10 +51,11 @@ export const getMyActiveSubscription = async (): Promise<UserSubscription[]> => 
 };
 
 export interface ConfirmIosSubscriptionRequest {
-  userId: string;
+  // userId: string;
   planId: string;
   localSubscriptionId: string;
   receiptData: string;
+  signedTransactionInfo?: string;
 }
 
 export const confirmIosSubscription = async (
