@@ -4,6 +4,7 @@ import { useEmergency } from './emergency.hooks';
 import { EMERGENCY_PASSKEY_TIMEOUT_SECONDS } from './emergency.constants';
 import { trackMeLocationSyncService } from '@/services/trackMeLocationSync.service';
 import { streamVideoClientService } from '@/features/video/video.client';
+import { streamVideoServiceDedicated } from '@/services/streamVideoServiceDedicated';
 import { navigate } from '@/navigation/navigationRef';
 import { EmergencyService } from './emergency.service';
 
@@ -94,11 +95,28 @@ export const EmergencyFlowProvider: React.FC<{ children: React.ReactNode }> = ({
     emergencyCallStartedRef.current = true;
     clearEmergencyUi();
 
+    // Leave any existing Stream call before rejoining to prevent duplicate
+    // participants. The previous VideoMonitor unmount fires call.leave()
+    // asynchronously, so it may not have completed yet.
+    await streamVideoServiceDedicated.cleanupCall();
+
+    // Notify the backend so agents receive the call.incoming socket event.
+    // If the backend returns a fresh token, use it instead of the cached one.
+    const rejoinResult = await EmergencyService.rejoin(context.emergencyId, context.callId);
+    const callToken = rejoinResult.callToken || context.callToken;
+    const callId = rejoinResult.callId || context.callId;
+
+    // Override the token so the next StreamVideoCallDedicated mount uses
+    // the potentially refreshed token from the rejoin response.
+    if (rejoinResult.callToken) {
+      streamVideoClientService.setNextTokenOverride(rejoinResult.callToken);
+    }
+
     navigate('Main' as any, {
       screen: 'VideoMonitor',
       params: {
-        callId: context.callId,
-        callToken: context.callToken,
+        callId,
+        callToken,
         userName: auth.user?.name || auth.user?.email || 'User',
         autoStart: false,
       },

@@ -84,3 +84,10 @@ export const disableEmergencyById = async (
 ): Promise<CommandResponse<EmergencySessionDto>> => {
   return await post(`/emergency/${encodeURIComponent(emergencyId)}/disable`, payload);
 };
+
+export const rejoinEmergencyCall = async (
+  emergencyId: string,
+  callId?: string,
+): Promise<CommandResponse<{ callId: string; callToken: string }>> => {
+  return await post(`/emergency/${encodeURIComponent(emergencyId)}/rejoin`, callId ? { callId } : {});
+};

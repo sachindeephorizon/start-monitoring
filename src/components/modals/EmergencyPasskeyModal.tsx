@@ -63,14 +63,41 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
   const lastDisplayedSecondsRef = useRef<number>(10);
   const modalVisibleRef = useRef(false);
   
-  // Initialize countdown when emergency modal opens
+  // Stable ref for the countdown interval tick so the interval closure
+  // always reads the latest deadline without needing to be recreated.
+  const startCountdownInterval = useRef(() => {
+    if (intervalRef.current) return; // already running
+
+    intervalRef.current = setInterval(() => {
+      if (AppState.currentState !== 'active') return;
+
+      if (!deadlineRef.current) {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+        return;
+      }
+
+      const remaining = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
+
+      if (remaining !== lastDisplayedSecondsRef.current) {
+        lastDisplayedSecondsRef.current = remaining;
+        setDisplaySeconds(remaining);
+      }
+
+      if (remaining <= 0) {
+        if (intervalRef.current) {
+          clearInterval(intervalRef.current);
+          intervalRef.current = null;
+        }
+      }
+    }, 100);
+  }).current;
+
+  // Initialize deadline when emergency modal opens; keep interval alive across re-renders.
   useEffect(() => {
-    // Track modal visibility to prevent re-initialization
-    const wasVisible = modalVisibleRef.current;
-    modalVisibleRef.current = visible && isEmergency;
-    
     if (!visible || !isEmergency) {
-      // Cleanup when modal closes
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
         intervalRef.current = null;
@@ -78,80 +105,41 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
       deadlineRef.current = null;
       setDisplaySeconds(10);
       lastDisplayedSecondsRef.current = 10;
+      modalVisibleRef.current = false;
       return;
-    }
-    
-    // Only initialize once when modal first opens
-    if (wasVisible) {
-      // Modal already open, just update deadline if it changed
-      if (emergencyDeadlineMs && emergencyDeadlineMs > Date.now() && emergencyDeadlineMs !== deadlineRef.current) {
-        deadlineRef.current = emergencyDeadlineMs;
-        const remaining = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
-        setDisplaySeconds(remaining);
-        lastDisplayedSecondsRef.current = remaining;
-        console.log('[PasskeyModal] Deadline updated:', emergencyDeadlineMs, 'Remaining:', remaining);
-      }
-      return;
-    }
-    
-    // 🔥 FOREGROUND ONLY: Set deadline when emergency modal first opens
-    if (emergencyDeadlineMs && emergencyDeadlineMs > Date.now()) {
-      deadlineRef.current = emergencyDeadlineMs;
-      console.log('[PasskeyModal] Using provided deadline:', emergencyDeadlineMs, 'Current time:', Date.now());
-    } else if (emergencyCountdown !== undefined && emergencyCountdown > 0) {
-      deadlineRef.current = Date.now() + (emergencyCountdown * 1000);
-      console.log('[PasskeyModal] Calculated deadline from countdown:', deadlineRef.current);
-    } else {
-      deadlineRef.current = Date.now() + (10 * 1000); // Default 10 seconds
-      console.log('[PasskeyModal] Using default 10 second deadline:', deadlineRef.current);
-    }
-    
-    // Set initial display value
-    const initialSeconds = Math.max(0, Math.ceil((deadlineRef.current - Date.now()) / 1000));
-    setDisplaySeconds(initialSeconds);
-    lastDisplayedSecondsRef.current = initialSeconds;
-    console.log('[PasskeyModal] Initial countdown seconds:', initialSeconds);
-    
-    // 🔥 FOREGROUND ONLY: Start countdown interval - updates every 100ms
-    // This ensures smooth countdown and immediate UI updates in foreground
-    if (!intervalRef.current) {
-      console.log('[PasskeyModal] Starting countdown interval with deadline:', deadlineRef.current);
-      intervalRef.current = setInterval(() => {
-        // Only update when app is in foreground
-        if (AppState.currentState !== 'active') {
-          return;
-        }
-        
-        if (!deadlineRef.current) {
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-          return;
-        }
-        
-        const now = Date.now();
-        const remaining = Math.max(0, Math.ceil((deadlineRef.current - now) / 1000));
-        
-        // Update display only when seconds value changes
-        if (remaining !== lastDisplayedSecondsRef.current) {
-          lastDisplayedSecondsRef.current = remaining;
-          setDisplaySeconds(remaining);
-          console.log('[PasskeyModal] Countdown updated:', remaining, 'seconds remaining');
-        }
-        
-        // Stop when expired
-        if (remaining <= 0) {
-          console.log('[PasskeyModal] Countdown expired');
-          if (intervalRef.current) {
-            clearInterval(intervalRef.current);
-            intervalRef.current = null;
-          }
-        }
-      }, 100); // Update every 100ms for smooth countdown
     }
 
-    // Cleanup on unmount — prevent interval from firing on unmounted component
+    const wasVisible = modalVisibleRef.current;
+    modalVisibleRef.current = true;
+
+    // Set / update the deadline
+    if (!wasVisible) {
+      // First open — pick the best deadline source
+      if (emergencyDeadlineMs && emergencyDeadlineMs > Date.now()) {
+        deadlineRef.current = emergencyDeadlineMs;
+      } else if (emergencyCountdown !== undefined && emergencyCountdown > 0) {
+        deadlineRef.current = Date.now() + emergencyCountdown * 1000;
+      } else {
+        deadlineRef.current = Date.now() + 10 * 1000;
+      }
+    } else if (
+      emergencyDeadlineMs &&
+      emergencyDeadlineMs > Date.now() &&
+      emergencyDeadlineMs !== deadlineRef.current
+    ) {
+      // Already open but deadline changed (e.g. server hydration) — update it
+      deadlineRef.current = emergencyDeadlineMs;
+    }
+
+    // Sync display to current deadline
+    const initialSeconds = Math.max(0, Math.ceil((deadlineRef.current! - Date.now()) / 1000));
+    setDisplaySeconds(initialSeconds);
+    lastDisplayedSecondsRef.current = initialSeconds;
+
+    // Ensure the interval is running — this is the key fix: the effect cleanup
+    // from a previous run may have cleared the interval, so always restart it.
+    startCountdownInterval();
+
     return () => {
       if (intervalRef.current) {
         clearInterval(intervalRef.current);
@@ -159,13 +147,12 @@ export const EmergencyPasskeyModal: React.FC<EmergencyPasskeyModalProps> = ({
       }
     };
     // CRITICAL: Do NOT include `emergencyCountdown` in deps.
-    // HomeScreen updates it every 100ms (10→9→8…), which re-triggers this effect,
-    // clears the internal interval via cleanup, then returns early (wasVisible=true)
-    // without restarting it → countdown freezes at 9.
-    // The modal drives its own countdown from `emergencyDeadlineMs` (absolute timestamp).
-    // `emergencyCountdown` is only used as a fallback for initial setup.
+    // The flow provider updates it every 100ms (10→9→8…) which would re-trigger
+    // this effect on every tick. The modal drives its own countdown from
+    // `emergencyDeadlineMs` (absolute timestamp); `emergencyCountdown` is only
+    // used as a fallback for the initial setup.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [visible, isEmergency, emergencyDeadlineMs]);
+  }, [visible, isEmergency, emergencyDeadlineMs, startCountdownInterval]);
 
   const handleNumberPress = (number: number) => {
     if (enteredPasskey.length < 4) {
