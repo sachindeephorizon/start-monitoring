@@ -7,5 +7,7 @@ export { default as HomeScreen } from './HomeScreen';
 export { default as SubscriptionScreen } from './SubscriptionScreen';
 export { default as SubscriptionPlansScreen } from './SubscriptionPlansScreen';
 export { default as FamilyScreen } from './FamilyScreen';
+export { default as InitiateSafetyCheckScreen } from './InitiateSafetyCheckScreen';
+export { default as AssignSafetyCheckScreen } from './AssignSafetyCheckScreen';
 export { default as EmergencyContactsScreen } from './EmergencyContactsScreen';
 export { default as TrialExpiredScreen } from './TrialExpiredScreen';

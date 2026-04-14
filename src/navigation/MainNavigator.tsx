@@ -19,6 +19,8 @@ import HistoryScreen from '@/screens/HistoryScreen';
 import SubscriptionScreen from '@/screens/SubscriptionScreen';
 import SubscriptionPlansScreen from '@/screens/SubscriptionPlansScreen';
 import FamilyScreen from '@/screens/FamilyScreen';
+import InitiateSafetyCheckScreen from '@/screens/InitiateSafetyCheckScreen';
+import AssignSafetyCheckScreen from '@/screens/AssignSafetyCheckScreen';
 import EmergencyContactsScreen from '@/screens/EmergencyContactsScreen';
 import TrialExpiredScreen from '@/screens/TrialExpiredScreen';
 import PoliciesScreen from '@/screens/PoliciesScreen';
@@ -42,6 +44,8 @@ export type MainStackParamList = {
   Subscription: undefined;
   SubscriptionPlans: undefined;
   Family: undefined;
+  InitiateSafetyCheck: undefined;
+  AssignSafetyCheck: undefined;
   EmergencyContacts: undefined;
   TrialExpired: undefined;
   Policies: undefined;
@@ -117,6 +121,8 @@ export function MainNavigator() {
           options={Platform.OS === 'ios' ? { presentation: 'modal' } : undefined}
         />
         <Stack.Screen name="Family" component={FamilyScreen} />
+        <Stack.Screen name="InitiateSafetyCheck" component={InitiateSafetyCheckScreen} />
+        <Stack.Screen name="AssignSafetyCheck" component={AssignSafetyCheckScreen} />
         <Stack.Screen name="EmergencyContacts" component={EmergencyContactsScreen} />
         <Stack.Screen name="TrialExpired">
           {({ navigation }: any) => (
