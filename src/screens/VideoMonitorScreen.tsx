@@ -465,7 +465,7 @@ const VideoMonitorScreen: React.FC = () => {
 	);
 
 	const handleClose = useCallback(() => {
-		setActiveService(null);
+		// setActiveService(null);
 		navigation.goBack();
 	}, [navigation]);
 
