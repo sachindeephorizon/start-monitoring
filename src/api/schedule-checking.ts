@@ -2,7 +2,7 @@ import { get, post } from "./config";
 
 export type CheckinFrequency = 'ONE_TIME' | 'DAILY' | 'WEEKLY';
 
-export type CheckinStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED';
+export type CheckinStatus = 'ACTIVE' | 'COMPLETED' | 'CANCELLED' | 'ESCALATED';
 
 export type CheckinJobStatus =
   | 'SCHEDULED'
@@ -43,6 +43,87 @@ export interface CreateScheduleCheckInPayload {
   startAt: string;
   frequency: CheckinFrequency;
   remarks?: string;
+}
+
+export interface AssignScheduleCheckInPayload {
+  targetUserId: string;
+  startAt: string;
+  frequency: CheckinFrequency;
+  remarks?: string;
+}
+
+export type AssignedCheckinJobStatus =
+  | 'SCHEDULED'
+  | 'COMPLETED'
+  | 'CANCELED'
+  | 'MISSED'
+  | 'TIMEOUT'
+  | 'WRONG_PIN';
+
+export interface AssignedCheckinUser {
+  id: string;
+  name: string;
+  phone: string;
+  email: string | null;
+}
+
+export interface AssignedCheckinJob {
+  id: string;
+  scheduledAt: string;
+  executedAt: string | null;
+  status: AssignedCheckinJobStatus;
+  attempts: number;
+}
+
+export interface AssignedCheckinLastJob {
+  id: string;
+  scheduledAt: string;
+  executedAt: string | null;
+  status: AssignedCheckinJobStatus;
+}
+
+export interface AssignedCheckinStats {
+  completed: number;
+  missed: number;
+  wrongPin: number;
+  timeout: number;
+}
+
+export interface AssignedCheckinItem {
+  id: string;
+  userId: string;
+  user: AssignedCheckinUser;
+  startAt: string;
+  endAt: string | null;
+  nextRunAt: string | null;
+  lastRunAt: string | null;
+  type: 'SCHEDULE_CHECKIN';
+  frequency: CheckinFrequency;
+  status: CheckinStatus;
+  remarks: string | null;
+  createdAt: string;
+  updatedAt: string;
+  jobs: AssignedCheckinJob[];
+  lastJob: AssignedCheckinLastJob | null;
+  stats: AssignedCheckinStats;
+}
+
+export interface GetAssignedByMeOptions {
+  includeRecent?: boolean;
+  recentWindowHours?: number;
+}
+
+export interface AssignedCheckinHistoryJob {
+  id: string;
+  scheduledAt: string;
+  executedAt: string | null;
+  status: AssignedCheckinJobStatus;
+  attempts: number;
+}
+
+export interface AssignedCheckinHistoryResponse {
+  data: AssignedCheckinHistoryJob[];
+  nextCursor: string | null;
 }
 
 export interface UpdateCheckinJobStatusPayload {
@@ -221,6 +302,38 @@ export const getMyScheduleCheckIns = async (status?: CheckinStatus): Promise<Sch
 
 export const getScheduleCheckInJobs = async (checkinId: string): Promise<CheckinJobDto[]> => {
   return get(`/schedule-checkin/${encodeURIComponent(checkinId)}/jobs`) as Promise<CheckinJobDto[]>;
+};
+
+export const assignScheduleCheckIn = async (
+  input: AssignScheduleCheckInPayload,
+): Promise<ScheduleCheckInDto> => {
+  const res = await post('/schedule-checkin/assign', input) as CommandResponse<ScheduleCheckInDto>;
+  return res.data;
+};
+
+export const getAssignedScheduleCheckIns = async (
+  options?: GetAssignedByMeOptions,
+): Promise<AssignedCheckinItem[]> => {
+  const params = new URLSearchParams();
+  if (options?.includeRecent) params.set('includeRecent', 'true');
+  if (typeof options?.recentWindowHours === 'number') {
+    params.set('recentWindowHours', String(options.recentWindowHours));
+  }
+  const qs = params.toString();
+  return get(`/schedule-checkin/assigned-by-me${qs ? `?${qs}` : ''}`) as Promise<AssignedCheckinItem[]>;
+};
+
+export const getAssignedCheckInHistory = async (
+  checkinId: string,
+  options?: { limit?: number; cursor?: string },
+): Promise<AssignedCheckinHistoryResponse> => {
+  const params = new URLSearchParams();
+  if (typeof options?.limit === 'number') params.set('limit', String(options.limit));
+  if (options?.cursor) params.set('cursor', options.cursor);
+  const qs = params.toString();
+  return get(
+    `/schedule-checkin/${encodeURIComponent(checkinId)}/assigned-history${qs ? `?${qs}` : ''}`,
+  ) as Promise<AssignedCheckinHistoryResponse>;
 };
 
 export const cancelScheduleCheckIn = async (checkinId: string): Promise<ScheduleCheckInDto> => {

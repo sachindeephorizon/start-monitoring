@@ -30,7 +30,7 @@ const SlideMenu: React.FC<SlideMenuProps> = ({
 }) => {
   const slideAnim = useRef(new Animated.Value(280)).current;
 
-  const { currentPlan, isFamilyPlan, subscription, isLoading } = useSubscription();
+  const { currentPlan, isFamilyPlan, isFamilyPlanOwner, subscription, isLoading } = useSubscription();
 
   console.log('[SlideMenu] Render', { visible, currentPlan: currentPlan?.name, isFamilyPlan, hasSubscription: !!subscription });
 
@@ -171,6 +171,17 @@ const SlideMenu: React.FC<SlideMenuProps> = ({
             >
               <MaterialIcons name="family-restroom" size={22} color="#2C3E50" style={iconStyles.icon} />
               <Text style={styles.slideMenuItemText}>Family</Text>
+            </TouchableOpacity>
+          )}
+
+          {/* Initiate Safety Check (Family Plan Owner) */}
+          {!isLoading && isFamilyPlan && isFamilyPlanOwner && (
+            <TouchableOpacity
+              style={styles.slideMenuItem}
+              onPress={() => handleNavigate('InitiateSafetyCheck')}
+            >
+              <MaterialIcons name="health-and-safety" size={22} color="#2C3E50" style={iconStyles.icon} />
+              <Text style={styles.slideMenuItemText}>Initiate Safety Check</Text>
             </TouchableOpacity>
           )}
 

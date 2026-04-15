@@ -56,6 +56,8 @@ import { Platform } from 'react-native';
 import { setupInterceptors } from '@/api/interceptors';
 import { AuthProvider } from '@/core/auth/AuthContext';
 import { useAuth } from '@/core/auth';
+import { useAppVersionCheck } from '@/hooks/useAppVersionCheck';
+import { AppUpdateModal } from '@/components/modals/AppUpdateModal';
 
 // Keep the native splash visible until we decide the app is ready.
 // This eliminates the "blink then black spinner" in preview/production builds.
@@ -84,6 +86,18 @@ function TrackMeForegroundSyncSetup() {
 
 function InAppAlertSetup() {
   return <InAppAlertBridge />;
+}
+
+function AppUpdateGate() {
+  const { visible, remoteVersion, isEssential, dismiss } = useAppVersionCheck();
+  return (
+    <AppUpdateModal
+      visible={visible}
+      remoteVersion={remoteVersion}
+      isEssential={isEssential}
+      onDismiss={dismiss}
+    />
+  );
 }
 
 function NativeSplashGate({ children }: { children: React.ReactNode }) {
@@ -164,6 +178,7 @@ export default function App() {
               </BootGuard>
             </NativeSplashGate>
             <InAppAlertBanner />
+            <AppUpdateGate />
             <StatusBar style="light" />
           </AuthProvider>
         </AppStateProvider>

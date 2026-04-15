@@ -78,7 +78,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
   }, [navigation, refresh]);
 
   const handleAddFamilyMember = async () => {
-    const phoneE164 = indianPhoneToE164(newMember.phone);
+    const phoneE164 = newMember.phone;
     if (!phoneE164) {
       Alert.alert('Error', 'Phone number is required');
       return;
@@ -89,7 +89,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
     if (result.success) {
       Alert.alert('Invite Sent', result.message || 'Invite sent. User will be auto-added after they sign up/login.');
       setShowAddMemberModal(false);
-      setNewMember({ phone: '+91' });
+      setNewMember({ phone: '' });
     } else {
       Alert.alert('Error', result.error || 'Failed to add family member');
     }
@@ -350,7 +350,7 @@ const FamilyScreen: React.FC<FamilyScreenProps> = ({ navigation }) => {
                 style={styles.cancelButton}
                 onPress={() => {
                   setShowAddMemberModal(false);
-                  setNewMember({ phone: '+91' });
+                  setNewMember({ phone: '' });
                 }}
               >
                 <Text style={styles.cancelButtonText}>Cancel</Text>
