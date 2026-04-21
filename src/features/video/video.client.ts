@@ -7,7 +7,7 @@
  * iOS SAFETY: Video calls are foreground-only.
  */
 
-import { StreamVideoClient, User } from '@stream-io/video-react-native-sdk';
+import type { StreamVideoClient, User } from '@stream-io/video-react-native-sdk';
 import { hasWebRTCNativeModule, loadStreamVideoSdk } from '@/lib/streamVideoSdkLoader';
 import { callSessionTokenGenerate } from '@/api/call-sessions';
 

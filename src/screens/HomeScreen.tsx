@@ -22,6 +22,8 @@ import {
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { MaterialIcons, FontAwesome5 } from '@expo/vector-icons';
 import { EmergencyButton } from '@/components/emergency';
+import { StartMonitoringButton, MonitoringActiveBanner } from '@/components/monitoring';
+import { useMonitoringSession } from '@/features/monitoring/MonitoringSession';
 import { layoutStyles } from '@/styles/Layout.styles';
 import { serviceCardStyles } from '@/styles/ServiceCard.styles';
 import { emergencyStyles } from '@/styles/Emergency.styles';
@@ -85,10 +87,26 @@ const getSocketEventData = (envelope: NotificationEnvelope): Record<string, unkn
   return envelope.data;
 };
 
+function formatElapsedSince(startedAt: number | null): string {
+  if (!startedAt) return '00:00';
+  const s = Math.max(0, Math.floor((Date.now() - startedAt) / 1000));
+  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
+}
+
+function tripTypeLabel(t: 'cab' | 'walking' | 'meeting' | 'custom'): string {
+  switch (t) {
+    case 'cab': return 'Cab';
+    case 'walking': return 'Walking';
+    case 'meeting': return 'Meeting';
+    default: return 'Trip';
+  }
+}
+
 const HomeScreen: React.FC<HomeScreenProps> = () => {
   const navigation = useNavigation();
   const route = useRoute();
   const auth = useAuth();
+  const monitoring = useMonitoringSession();
   const { hasAccess: hasSubscriptionAccess } = useSubscription();
   const checkIn = useCheckIn({ enableDueWatcher: false });
   const insets = useSafeAreaInsets();
@@ -840,6 +858,27 @@ const HomeScreen: React.FC<HomeScreenProps> = () => {
           isEmergencyActive={isEmergencyActive}
           isDisabled={isEmergencyProcessing || emergencyPressInFlightRef.current}
         />
+
+        {/* AI Trip Monitoring — banner if active, button otherwise */}
+        {monitoring.isActive ? (
+          <MonitoringActiveBanner
+            onPress={() => (navigation as any).navigate('ActiveMonitoring')}
+            elapsedLabel={formatElapsedSince(monitoring.startedAt)}
+            contextLabel={
+              monitoring.destination?.name
+                ? `${tripTypeLabel(monitoring.tripType)} · ${monitoring.destination.name}`
+                : `${tripTypeLabel(monitoring.tripType)} · SOC watching`
+            }
+          />
+        ) : (
+          <StartMonitoringButton
+            onPress={async () => {
+              const ok = await monitoring.startSession();
+              if (ok) (navigation as any).navigate('QuickStart');
+            }}
+            isMonitoringActive={monitoring.isStarting}
+          />
+        )}
 
         {/* Service Cards */}
         <ScrollView 

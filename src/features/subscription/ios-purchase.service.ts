@@ -12,21 +12,25 @@
 
 import { Platform } from 'react-native';
 import * as Device from 'expo-device';
-import {
-  initConnection,
-  endConnection,
-  requestPurchase,
-  purchaseUpdatedListener,
-  purchaseErrorListener,
-  finishTransaction,
-  getAvailablePurchases,
-  type Purchase,
-  type ProductSubscription,
-} from 'react-native-iap';
+import type { Purchase, ProductSubscription } from 'react-native-iap';
 import { getUserProfile, type UserSubscription as ApiUserSubscription } from '@/api/auth';
 import { getPlans, type BackendPlan } from '@/api/plans';
 import { initiateUserSubscription, confirmIosSubscription } from '@/api/userSubscription';
 import { PaymentVerificationResult, Subscription as AppSubscription } from './subscription.types';
+
+type ReactNativeIapModule = typeof import('react-native-iap');
+
+let iapModulePromise: Promise<ReactNativeIapModule> | null = null;
+
+async function getIapModule(): Promise<ReactNativeIapModule> {
+  if (Platform.OS !== 'ios') {
+    throw new Error('react-native-iap is only available on iOS');
+  }
+  if (!iapModulePromise) {
+    iapModulePromise = import('react-native-iap');
+  }
+  return iapModulePromise;
+}
 
 // IMPORTANT: Do NOT import SubscriptionPlan from subscription.types.ts here.
 // That file defines SubscriptionPlan as a string union (e.g. 'individual_monthly'),
@@ -220,12 +224,13 @@ export const IOSPurchaseService = {
 
     // Ensure StoreKit connection exists (idempotent).
     try {
+      const { initConnection } = await getIapModule();
       await initConnection();
     } catch {
       // If init fails here, downstream calls will likely fail too, but keep it non-fatal for better diagnostics.
     }
 
-    const iap = await import('react-native-iap');
+    const iap = await getIapModule();
     const results: any[] = [];
 
     // Preferred path for subscriptions (many setups return richer data here).
@@ -275,6 +280,7 @@ export const IOSPurchaseService = {
     }
 
     try {
+      const { initConnection } = await getIapModule();
       await initConnection();
       console.log('[iOS Purchase] StoreKit connection initialized');
     } catch (error) {
@@ -294,6 +300,7 @@ export const IOSPurchaseService = {
     }
 
     try {
+      const { endConnection } = await getIapModule();
       await endConnection();
       console.log('[iOS Purchase] StoreKit connection closed');
     } catch (error) {
@@ -405,6 +412,7 @@ export const IOSPurchaseService = {
 
       // Ensure StoreKit is ready (safe to call multiple times).
       try {
+        const { initConnection } = await getIapModule();
         await initConnection();
       } catch (e) {
         console.warn('[iOS Purchase] initConnection failed (will continue):', e);
@@ -422,6 +430,8 @@ export const IOSPurchaseService = {
       });
 
       // Set up purchase listeners (react-native-iap v14 is event-based)
+      const { purchaseUpdatedListener, purchaseErrorListener, requestPurchase, finishTransaction } = await getIapModule();
+
       const purchaseUpdateSubscription = purchaseUpdatedListener(async (purchase: Purchase) => {
         try {
           if (purchase.productId !== productId) {
@@ -594,7 +604,7 @@ export const IOSPurchaseService = {
       let receipt: string | null = null;
 
       try {
-        const { getTransactionJwsIOS } = await import('react-native-iap');
+        const { getTransactionJwsIOS } = await getIapModule();
         // RN-IAP expects productId here.
         transactionJws = (await (getTransactionJwsIOS as any)(productId)) ?? null;
         if (transactionJws) {
@@ -607,7 +617,7 @@ export const IOSPurchaseService = {
       if (!transactionJws) {
         try {
           // Dynamically import to avoid bundler/type issues across builds
-          const { getReceiptDataIOS, getReceiptIOS } = await import('react-native-iap');
+          const { getReceiptDataIOS, getReceiptIOS } = await getIapModule();
           receipt = (await (getReceiptDataIOS as any)()) ?? null;
           if (!receipt) {
             receipt = await (getReceiptIOS as any)();
@@ -699,6 +709,7 @@ export const IOSPurchaseService = {
 
       // Ensure StoreKit connection exists (idempotent).
       try {
+        const { initConnection } = await getIapModule();
         await initConnection();
       } catch {
         // non-fatal
@@ -713,6 +724,7 @@ export const IOSPurchaseService = {
       // 2) getPurchaseHistory as a last resort
       let purchases: Purchase[] = []
       try {
+        const { getAvailablePurchases } = await getIapModule();
         const res = await getAvailablePurchases({
           onlyIncludeActiveItemsIOS: true,
           alsoPublishToEventListenerIOS: false,
@@ -727,6 +739,7 @@ export const IOSPurchaseService = {
 
       if (!purchases.length) {
         try {
+          const { getAvailablePurchases } = await getIapModule();
           const res = await getAvailablePurchases({
             // no active-only filter
             alsoPublishToEventListenerIOS: false,
@@ -744,7 +757,7 @@ export const IOSPurchaseService = {
         try {
           // Some react-native-iap builds do not export getPurchaseHistory.
           // Load dynamically and use if available.
-          const iap = await import('react-native-iap')
+          const iap = await getIapModule()
           const getHistory = (iap as any).getPurchaseHistory
           if (typeof getHistory === 'function') {
             const res = await getHistory()
@@ -815,7 +828,7 @@ export const IOSPurchaseService = {
         let receipt: string | null = null;
 
         try {
-          const { getTransactionJwsIOS } = await import('react-native-iap');
+          const { getTransactionJwsIOS } = await getIapModule();
           transactionJws = (await (getTransactionJwsIOS as any)(pid)) ?? null;
         } catch {
           // ignore
@@ -823,7 +836,7 @@ export const IOSPurchaseService = {
 
         if (!transactionJws) {
           try {
-            const { getReceiptDataIOS, getReceiptIOS } = await import('react-native-iap');
+            const { getReceiptDataIOS, getReceiptIOS } = await getIapModule();
             receipt = (await (getReceiptDataIOS as any)()) ?? null;
             if (!receipt) receipt = await (getReceiptIOS as any)();
           } catch {
@@ -878,6 +891,7 @@ export const IOSPurchaseService = {
    * Monitors purchase state until it completes or fails.
    */
   async waitForPurchaseCompletion(): Promise<{ success: boolean; error?: string; purchase?: Purchase }> {
+    const { purchaseUpdatedListener, finishTransaction } = await getIapModule();
     return new Promise((resolve) => {
       const purchaseUpdateSubscription = purchaseUpdatedListener(
         async (purchase: Purchase) => {

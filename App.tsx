@@ -35,6 +35,11 @@ import 'react-native-get-random-values';
 // delivers location updates. It runs without React, without UI, without timers.
 import './src/features/tracking/tracking.task';
 
+// Start Monitoring uses its OWN background task (different name, different
+// SecureStore keys, different ping endpoint). Must also be registered at
+// the top of the bundle so the OS can dispatch background fixes to it.
+import './src/features/monitoring/backgroundLocation';
+
 // Navigation
 import { RootNavigator } from '@/navigation/RootNavigator';
 

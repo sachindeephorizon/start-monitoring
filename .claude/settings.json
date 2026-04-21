@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(\"/c/Users/Lenovo/AppData/Local/Android/Sdk/platform-tools/adb.exe\" devices *)",
+      "Bash(timeout 10 \"/c/Users/Lenovo/AppData/Local/Android/Sdk/platform-tools/adb.exe\" pair 192.168.29.88:40971 658364)",
+      "Bash(tee /tmp/pair.log)",
+      "Bash(echo \"exit=$?\")",
+      "Read(//tmp/**)",
+      "Bash(cmd.exe //c \"C:\\\\\\\\Users\\\\\\\\Lenovo\\\\\\\\AppData\\\\\\\\Local\\\\\\\\Android\\\\\\\\Sdk\\\\\\\\platform-tools\\\\\\\\adb.exe pair 192.168.29.88:40971 658364\")",
+      "Bash(iconv -f UTF-16LE -t UTF-8 \"c:/Users/Lenovo/Desktop/deep-horizon-security/crash.txt\")",
+      "Bash(iconv -f UTF-16LE -t UTF-8 \"c:/Users/Lenovo/Desktop/deep-horizon-security/crash.txt\" echo \"transcoded $\\(wc -c < /tmp/crash-utf8.txt\\) bytes\" echo echo \"=== ReactNativeJS / Error / Hermes lines ===\" grep -E -i 'ReactNativeJS|ReactNative\\\\b.*Error|Hermes|Soloader|UnsatisfiedLinkError|ExceptionsManager|nitro|Nitro|react-native-iap' /tmp/crash-utf8.txt)",
+      "Read(//c/Users/Lenovo/Desktop/nnnn/rewp1/src/services/**)"
+    ]
+  }
+}

@@ -1,5 +1,6 @@
 {
   "expo": {
+    "owner": "deephorizon-security-technologies",
     "name": "DeepHorizon Security",
     "slug": "deephorizon-security",
     "version": "1.0.39",
@@ -59,7 +60,8 @@
         "CAMERA",
         "RECORD_AUDIO",
         "FOREGROUND_SERVICE",
-        "FOREGROUND_SERVICE_LOCATION"
+        "FOREGROUND_SERVICE_LOCATION",
+        "POST_NOTIFICATIONS"
       ]
     },
     "web": {
@@ -74,7 +76,8 @@
           "locationAlwaysPermission": "DeepHorizon requires background location access for continuous security monitoring.",
           "locationWhenInUsePermission": "DeepHorizon needs your location to provide real-time security tracking.",
           "isIosBackgroundLocationEnabled": true,
-          "isAndroidBackgroundLocationEnabled": true
+          "isAndroidBackgroundLocationEnabled": true,
+          "isAndroidForegroundServiceEnabled": true
         }
       ],
       [
@@ -100,14 +103,16 @@
     ],
     "extra": {
       "eas": {
-        "projectId": "27fb532d-c0f0-45e5-919e-0e7b9a62366d"
+        "projectId": "dffb010e-d230-4ff0-9124-f31c2ee40d00"
       },
-      "supabaseUrl": "",
-      "supabaseAnonKey": "",
-      "streamApiKey": "",
-      "streamTokenUrl": "",
+      "supabaseUrl": "https://byyngkutlttzmlhknnmp.supabase.co",
+      "supabaseAnonKey": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eW5na3V0bHR0em1saGtubm1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ1NjkzMzQsImV4cCI6MjA3MDE0NTMzNH0.otkdKc3hLJN1P-TRpadH0KxqQhsVfl0J5sNZAinjH14",
+      "streamApiKey": "hp84m8c435v6",
+      "streamTokenUrl": "https://deep-horizon-dashboard.vercel.app/api/stream/video-token",
       "streamAppId": "hp84m8c435v6",
-      "agentDashboardUrl": ""
+      "agentDashboardUrl": "",
+      "env": "production",
+      "redirectUrl": "deephorizon://auth"
     },
     "runtimeVersion": "1.0.39",
     "updates": {

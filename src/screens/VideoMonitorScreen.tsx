@@ -1,4 +1,4 @@
-import React, { useState, Suspense, useEffect, useCallback, useRef } from 'react';
+import React, { useState, Suspense, useEffect, useCallback, useRef, lazy } from 'react';
 import {
 	View,
 	Text,
@@ -14,8 +14,6 @@ import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { Camera } from 'expo-camera';
 import * as Location from 'expo-location';
-import StreamVideoCallDedicated from '@/components/StreamVideoCallDedicated';
-import AudioCallScreen from '@/screens/AudioCallScreen';
 import { useAuth } from '@/core/auth';
 import { simpleCallService, SimpleCallSession } from '@/services/simpleCall.service';
 import { setCallPriorityActive } from '@/services/callPriority';
@@ -24,6 +22,10 @@ import { styles as videoMonitorStyles } from '@/components/modals/VideoMonitorMo
 import { useCallEndedSocket } from '@/hooks/useCallEndedSocket';
 import { locationTrackingSocketService } from '@/core/location';
 import { streamVideoClientService } from '@/features/video/video.client';
+import { hasWebRTCNativeModule } from '@/lib/streamVideoSdkLoader';
+
+const StreamVideoCallDedicatedLazy = lazy(() => import('@/components/StreamVideoCallDedicated'));
+const AudioCallScreenLazy = lazy(() => import('@/screens/AudioCallScreen'));
 
 const VideoMonitorScreen: React.FC = () => {
 	const navigation = useNavigation();
@@ -95,6 +97,14 @@ const VideoMonitorScreen: React.FC = () => {
 
 	const startCall = useCallback(async (callType: 'video' | 'audio', reason: string, agentId?: string) => {
 		try {
+			if (!hasWebRTCNativeModule) {
+				Alert.alert(
+					'WebRTC Not Available',
+					'This build does not include WebRTC native modules. Please use a development/production build (not Expo Go) and reinstall the app.',
+				);
+				return;
+			}
+
 			setIsStartingCall(true);
 			setJoinExistingCall(false);
 			setCallPriorityActive(true);
@@ -179,6 +189,15 @@ const VideoMonitorScreen: React.FC = () => {
 
 	useEffect(() => {
 		if (!auth.isAuthReady || !auth.user?.id || !incomingCallId || showCall || routeAutoStart) {
+			return;
+		}
+
+		if (!hasWebRTCNativeModule) {
+			Alert.alert(
+				'WebRTC Not Available',
+				'Incoming call cannot be opened in this build because WebRTC native modules are missing.',
+				[{ text: 'OK', onPress: () => navigation.goBack() }],
+			);
 			return;
 		}
 
@@ -479,7 +498,14 @@ const VideoMonitorScreen: React.FC = () => {
 		<SafeAreaView style={styles.container} edges={['top', 'bottom']}>
 			{showCall && callSession && isAudioCall ? (
 				<View style={styles.callContainer}>
-					<AudioCallScreen />
+					<Suspense fallback={
+						<View style={styles.callFallback}>
+							<ActivityIndicator size="large" color="#ffffff" />
+							<Text style={styles.callFallbackText}>Loading audio call interface...</Text>
+						</View>
+					}>
+						<AudioCallScreenLazy />
+					</Suspense>
 				</View>
 			) : showCall && callSession && !isAudioCall ? (
 				<View style={styles.callContainer}>
@@ -489,7 +515,7 @@ const VideoMonitorScreen: React.FC = () => {
 							<Text style={styles.callFallbackText}>Loading call interface...</Text>
 						</View>
 					}>
-						<StreamVideoCallDedicated
+						<StreamVideoCallDedicatedLazy
 							callId={callSession.roomCode}
 							userName={callSession.userName}
 							createCallIfMissing={!joinExistingCall || !!incomingCallToken}

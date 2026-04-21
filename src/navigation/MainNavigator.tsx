@@ -32,8 +32,16 @@ import ScheduleCheckInScreen from '@/screens/ScheduleCheckInScreen';
 import BookBodyguardScreen from '@/screens/BookBodyguardScreen';
 import VideoMonitorScreen from '@/screens/VideoMonitorScreen';
 import AudioCallScreen from '@/screens/AudioCallScreen';
+import {
+  QuickStartScreen,
+  ActiveMonitoringScreen,
+  CheckInPromptScreen,
+  SessionSummaryScreen,
+  EscalationScreen,
+} from '@/screens/monitoring';
 import CheckInPasskeyHost from '@/components/checkin/CheckInPasskeyHost';
 import { EmergencyFlowProvider } from '@/features/emergency/emergency.flow';
+import { MonitoringSessionProvider } from '@/features/monitoring/MonitoringSession';
 
 const Stack = createStackNavigator();
 
@@ -57,6 +65,17 @@ export type MainStackParamList = {
   BookBodyguard: undefined;
   VideoMonitor: { callId?: string; callToken?: string; userName?: string; autoStart?: boolean; agentId?: string } | undefined;
   AudioCall: { callId?: string; userName?: string; agentId?: string } | undefined;
+  QuickStart: undefined;
+  ActiveMonitoring: { destination?: string; tripType?: string; contactIds?: string[] } | undefined;
+  CheckInPrompt:
+    | {
+        dueAt?: string;
+        intervalMinutes?: number;
+        startedAt?: number;
+      }
+    | undefined;
+  SessionSummary: { elapsedSeconds?: number } | undefined;
+  Escalation: undefined;
   // TODO: Add these when screens are implemented
   // VideoCall: { sessionId: string; roomCode: string };
 };
@@ -102,6 +121,7 @@ export function MainNavigator() {
 
   return (
     <EmergencyFlowProvider>
+     <MonitoringSessionProvider>
       <Stack.Navigator
         screenOptions={{
           headerShown: false,
@@ -143,9 +163,23 @@ export function MainNavigator() {
         <Stack.Screen name="BookBodyguard" component={BookBodyguardScreen} />
         <Stack.Screen name="VideoMonitor" component={VideoMonitorScreen} />
         <Stack.Screen name="AudioCall" component={AudioCallScreen} />
+        <Stack.Screen name="QuickStart" component={QuickStartScreen} />
+        <Stack.Screen name="ActiveMonitoring" component={ActiveMonitoringScreen} />
+        <Stack.Screen
+          name="CheckInPrompt"
+          component={CheckInPromptScreen}
+          options={{ presentation: 'modal', gestureEnabled: false }}
+        />
+        <Stack.Screen name="SessionSummary" component={SessionSummaryScreen} />
+        <Stack.Screen
+          name="Escalation"
+          component={EscalationScreen}
+          options={{ gestureEnabled: false }}
+        />
       </Stack.Navigator>
 
       <CheckInPasskeyHost />
+     </MonitoringSessionProvider>
     </EmergencyFlowProvider>
   );
 }
