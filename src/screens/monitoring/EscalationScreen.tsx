@@ -9,6 +9,8 @@ import { useAuth } from '@/core/auth';
 import { escalationCancel } from '@/api/monitoring';
 import { useMonitoringSession } from '@/features/monitoring/MonitoringSession';
 
+const RESET_INTERVAL_MINUTES = 3;
+
 type StepStatus = 'done' | 'active' | 'pending';
 
 interface EscalationStep {
@@ -44,7 +46,17 @@ const EscalationScreen: React.FC = () => {
   const handleSafe = async () => {
     if (cancelling) return;
     setCancelling(true);
-    // Reset the local tier engine immediately so we drop back to T1.
+    // Rebase the next check-in BEFORE clearing the Tier 3 signals.
+    // Otherwise the tier engine drops to T1 using the stale baseline and
+    // briefly computes "due now".
+    const optimisticNextCheckinAt = new Date(
+      Date.now() + RESET_INTERVAL_MINUTES * 60_000,
+    ).toISOString();
+    monitoring.applyCheckinUpdate({
+      tier: 1,
+      intervalMinutes: RESET_INTERVAL_MINUTES,
+      nextCheckinAt: optimisticNextCheckinAt,
+    });
     monitoring.clearTierSignal('missed_checkin');
     monitoring.clearTierSignal('long_deviation');
     if (auth.user?.id) {
@@ -52,10 +64,8 @@ const EscalationScreen: React.FC = () => {
         const r = await escalationCancel(auth.user.id);
         monitoring.applyCheckinUpdate({
           tier: r.tier_reset_to ?? 1,
-          // Backend uses TIER_CONFIG[1].interval_minutes; client knows the
-          // interval, but to stay accurate the next ping will sync exact ISO.
-          // Optimistically extend by 60s so the prompt won't re-fire.
-          nextCheckinAt: new Date(Date.now() + 60_000).toISOString(),
+          intervalMinutes: RESET_INTERVAL_MINUTES,
+          nextCheckinAt: optimisticNextCheckinAt,
         });
       } catch {
         // best-effort — UI returns to monitoring regardless

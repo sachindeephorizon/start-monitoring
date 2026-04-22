@@ -18,7 +18,7 @@
  * for the same deadline.
  */
 
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useMonitoringSession } from './MonitoringSession';
@@ -27,6 +27,7 @@ import { navigationRef } from '@/navigation/navigationRef';
 const NOTIFICATION_CATEGORY = 'monitoring-checkin';
 const NOTIFICATION_DATA_TAG = 'monitoring_checkin';
 const NOTIFICATION_MISSED_TAG = 'monitoring_checkin_missed';
+const MONITORING_CHANNEL_ID = 'monitoring';
 
 // The 30-second response window the user has after the prompt fires
 // before the backend marks them as missed and escalates. Must match
@@ -45,17 +46,16 @@ function ensureNotificationHandler() {
       shouldShowAlert: true,
       shouldPlaySound: true,
       shouldSetBadge: true,
-      // shouldShowBanner / shouldShowList are SDK 52+ fields. Omitting them
-      // for compatibility with older expo-notifications versions, which
-      // throw in production (Hermes) when handed unknown handler keys.
+      shouldShowBanner: true,
+      shouldShowList: true,
     }),
   });
 }
 
 async function ensureAndroidChannel() {
-  if (Platform.OS !== 'android') return;
+  if (Platform.OS !== 'android') return MONITORING_CHANNEL_ID;
   try {
-    await Notifications.setNotificationChannelAsync('monitoring', {
+    await Notifications.setNotificationChannelAsync(MONITORING_CHANNEL_ID, {
       name: 'Safety check-ins',
       importance: Notifications.AndroidImportance.MAX,
       vibrationPattern: [0, 250, 250, 250],
@@ -65,17 +65,33 @@ async function ensureAndroidChannel() {
   } catch {
     // Channel ops are best-effort — ignore failures (e.g. on old OS versions).
   }
+  return MONITORING_CHANNEL_ID;
+}
+
+function navigateToMainScreen(screen: string, params?: Record<string, unknown>) {
+  if (!navigationRef.isReady()) return;
+  (navigationRef as any).navigate('Main', {
+    screen,
+    ...(params ? { params } : {}),
+  });
 }
 
 function navigateToPrompt(dueAt?: string | null, intervalMinutes?: number | null, startedAt?: number | null) {
   if (!navigationRef.isReady()) return;
-  // Use navigate (not replace) so the modal sits on top of whatever screen
-  // the user happened to be on.
-  navigationRef.navigate('CheckInPrompt' as never, {
+  // CheckInPrompt lives inside MainNavigator, not at the root.
+  // Route through "Main" so the action is handled from the container ref.
+  navigateToMainScreen('CheckInPrompt', {
     dueAt: dueAt ?? undefined,
     intervalMinutes: intervalMinutes ?? undefined,
     startedAt: startedAt ?? undefined,
-  } as never);
+  });
+}
+
+function navigateToEscalation() {
+  if (!navigationRef.isReady()) return;
+  const current = navigationRef.getCurrentRoute()?.name as string | undefined;
+  if (current === 'Escalation') return;
+  navigateToMainScreen('Escalation');
 }
 
 export const CheckInWatcher: React.FC = () => {
@@ -90,6 +106,7 @@ export const CheckInWatcher: React.FC = () => {
   const scheduledMissedIdRef = useRef<string | null>(null);
   const tickRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const appStateRef = useRef<AppStateStatus>(AppState.currentState);
+  const notificationPermissionGrantedRef = useRef<boolean | null>(null);
   // The notification-tap listener captures `monitoring` by closure on the
   // first render. Mirror isActive into a ref so the handler always reads
   // the current value — without this, a tap arriving after endSession
@@ -100,10 +117,37 @@ export const CheckInWatcher: React.FC = () => {
     isActiveRef.current = monitoring.isActive;
   }, [monitoring.isActive]);
 
+  const ensureNotificationPermission = useCallback(async (): Promise<boolean> => {
+    if (notificationPermissionGrantedRef.current === true) {
+      return true;
+    }
+    try {
+      const existing = await Notifications.getPermissionsAsync();
+      let status = existing.status;
+
+      if (status !== 'granted' && existing.canAskAgain) {
+        const requested = await Notifications.requestPermissionsAsync();
+        status = requested.status;
+      }
+
+      const granted = status === 'granted';
+      notificationPermissionGrantedRef.current = granted;
+      if (!granted) {
+        console.warn('[CheckInWatcher] notification permission not granted; background check-in alerts disabled');
+      }
+      return granted;
+    } catch (e) {
+      notificationPermissionGrantedRef.current = false;
+      console.warn('[CheckInWatcher] failed to verify notification permission', e);
+      return false;
+    }
+  }, []);
+
   // ── Setup notification handler + channel + tap listener ────────────────
   useEffect(() => {
     ensureNotificationHandler();
     ensureAndroidChannel();
+    ensureNotificationPermission().catch(() => {});
 
     const tapSub = Notifications.addNotificationResponseReceivedListener((res) => {
       const data = res.notification.request.content.data as Record<string, unknown>;
@@ -122,9 +166,8 @@ export const CheckInWatcher: React.FC = () => {
         // The next ping will also push 'missed_checkin' from the backend
         // flag, but doing it locally here means the screen flips
         // immediately without waiting for the next ping cadence.
-        if (navigationRef.isReady()) {
-          navigationRef.navigate('Escalation' as never);
-        }
+        monitoring.pushTierSignal('missed_checkin');
+        navigateToEscalation();
       }
     });
 
@@ -136,11 +179,25 @@ export const CheckInWatcher: React.FC = () => {
       tapSub.remove();
       appStateSub.remove();
     };
-  }, []);
+  }, [ensureNotificationPermission, monitoring.pushTierSignal]);
+
+  // While the engine is in the escalation flow (`missed_checkin` or
+  // `long_deviation` signal active), suppress ALL check-in prompting.
+  // Otherwise the short T3 interval causes a notification storm: every
+  // T3-cycle's `nextCheckinAt` lands in the past (because lastCheckin was
+  // never updated), the watcher fires a fresh prompt + missed, the backend
+  // re-escalates, and we loop. The escalation pipeline is already alerting
+  // the user — additional check-in prompts on top are noise.
+  // Resumes the moment EscalationScreen's "I'm Safe" clears the signals.
+  const dbg = monitoring.getEngineDebug();
+  const inEscalation =
+    !!dbg &&
+    (dbg.activeSignals.includes('missed_checkin') ||
+      dbg.activeSignals.includes('long_deviation'));
 
   // ── Foreground tick: prompt when due, on any screen ────────────────────
   useEffect(() => {
-    if (!monitoring.isActive) {
+    if (!monitoring.isActive || inEscalation) {
       if (tickRef.current) {
         clearInterval(tickRef.current);
         tickRef.current = null;
@@ -154,15 +211,35 @@ export const CheckInWatcher: React.FC = () => {
       if (lastPromptedRef.current === due) return;
       const dueMs = new Date(due).getTime();
       if (!Number.isFinite(dueMs)) return;
-      if (Date.now() < dueMs) return;
-      // Don't navigate over the prompt if it's already on screen.
+      const now = Date.now();
+      if (now < dueMs) return;
+
+      // Don't route over active escalation. This can happen when a missed
+      // notification tap and foreground resume race each other.
+      let current: string | undefined;
       if (navigationRef.isReady()) {
-        const current = navigationRef.getCurrentRoute()?.name;
-        if (current === 'CheckInPrompt') {
+        current = navigationRef.getCurrentRoute()?.name as string | undefined;
+        if (current === 'Escalation') {
           lastPromptedRef.current = due;
           return;
         }
       }
+
+      // If the 30s response window is already over, skip CheckInPrompt and
+      // enter escalation directly to avoid stacking prompt→escalation routes.
+      if (now >= dueMs + RESPONSE_WINDOW_MS) {
+        lastPromptedRef.current = due;
+        monitoring.pushTierSignal('missed_checkin');
+        navigateToEscalation();
+        return;
+      }
+
+      // Don't navigate over the prompt if it's already on screen.
+      if (current === 'CheckInPrompt') {
+        lastPromptedRef.current = due;
+        return;
+      }
+
       lastPromptedRef.current = due;
       navigateToPrompt(due, monitoring.intervalMinutes, monitoring.startedAt);
     };
@@ -173,7 +250,7 @@ export const CheckInWatcher: React.FC = () => {
       if (tickRef.current) clearInterval(tickRef.current);
       tickRef.current = null;
     };
-  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt]);
+  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, inEscalation]);
 
   // ── Background notification: schedule at nextCheckinAt ─────────────────
   useEffect(() => {
@@ -195,7 +272,10 @@ export const CheckInWatcher: React.FC = () => {
       scheduledForRef.current = null;
     };
 
-    if (!monitoring.isActive || !monitoring.nextCheckinAt) {
+    if (!monitoring.isActive || !monitoring.nextCheckinAt || inEscalation) {
+      // While in escalation, cancel any pending check-in notifications too.
+      // The user is already getting alerts via the escalation pipeline; we
+      // don't want a stale prompt notification firing on top.
       cancelPending();
       return;
     }
@@ -223,14 +303,18 @@ export const CheckInWatcher: React.FC = () => {
 
     (async () => {
       await cancelPending();
+      const canNotify = await ensureNotificationPermission();
+      if (!canNotify) return;
+      const channelId = await ensureAndroidChannel();
       try {
         // (1) The prompt notification at nextCheckinAt
         const promptId = await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Deep Horizon · Safety check-in',
-            body: "Are you safe? Tap to confirm — you have 30 seconds.",
+            body: 'Are you safe? Tap to confirm - you have 30 seconds.',
             sound: 'default',
             priority: Notifications.AndroidNotificationPriority.MAX,
+            vibrate: [0, 250, 250, 250],
             categoryIdentifier: NOTIFICATION_CATEGORY,
             data: {
               type: NOTIFICATION_DATA_TAG,
@@ -242,8 +326,8 @@ export const CheckInWatcher: React.FC = () => {
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: dueDate,
-            channelId: 'monitoring',
-          } as Notifications.DateTriggerInput,
+            channelId,
+          },
         });
         scheduledIdRef.current = promptId;
 
@@ -254,9 +338,10 @@ export const CheckInWatcher: React.FC = () => {
         const missedId = await Notifications.scheduleNotificationAsync({
           content: {
             title: 'Deep Horizon · ALERT',
-            body: 'Check-in missed. Emergency mode activated — open the app to confirm you are safe.',
+            body: 'Check-in missed. Emergency mode activated - open the app to confirm you are safe.',
             sound: 'default',
             priority: Notifications.AndroidNotificationPriority.MAX,
+            vibrate: [0, 500, 500, 500, 500],
             categoryIdentifier: NOTIFICATION_CATEGORY,
             data: {
               type: NOTIFICATION_MISSED_TAG,
@@ -266,8 +351,8 @@ export const CheckInWatcher: React.FC = () => {
           trigger: {
             type: Notifications.SchedulableTriggerInputTypes.DATE,
             date: missedDate,
-            channelId: 'monitoring',
-          } as Notifications.DateTriggerInput,
+            channelId,
+          },
         });
         scheduledMissedIdRef.current = missedId;
 
@@ -285,7 +370,7 @@ export const CheckInWatcher: React.FC = () => {
       // navigation. Cancellation happens when nextCheckinAt changes (which
       // re-runs this effect) or the session ends.
     };
-  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt]);
+  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, inEscalation, ensureNotificationPermission]);
 
   // Watcher renders nothing — it's effect-only.
   return null;

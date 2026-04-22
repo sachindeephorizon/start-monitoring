@@ -50,13 +50,13 @@ const NEAR_DESTINATION_M = 400;
 // coalesce sub-15 s intervals when the screen has been off for a while —
 // the requested interval is a floor, not a guarantee.
 const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
-  1: 30_000,  // T1 passive — 30 s, battery-sensitive
-  2: 10_000,  // T2 active  — 10 s
+  1: 60_000,  // T1 passive — 30 s, battery-sensitive
+  2: 15_000,  // T2 active  — 10 s
   3: 5_000,   // T3 emergency — 5 s
 };
 const BG_DISTANCE_M = 5;     // tighter than foreground; OS dedupes anyway
 const BG_ACCURACY_BY_TIER: Record<Tier, Location.LocationAccuracy> = {
-  1: Location.Accuracy.Balanced,
+  1: Location.Accuracy.Lowest,
   2: Location.Accuracy.Balanced,
   3: Location.Accuracy.High,
 };
@@ -101,9 +101,9 @@ const TIER_PROFILES: Record<Tier, TierProfile> = {
 // the moment the tier engine flips, so the user doesn't keep seeing a stale
 // "in 25 min" countdown after the system already escalated to T3.
 const TIER_INTERVAL_MIN: Record<Tier, number> = {
-  1: 30,
-  2: 15,
-  3: 5,
+  1: 3,
+  2: 2,
+  3: 1,
 };
 
 const DEFAULT_TIER: Tier = 1;

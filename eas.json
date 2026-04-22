@@ -23,7 +23,13 @@
         "EXPO_PUBLIC_ENV": "development",
         "EXPO_PUBLIC_BACKEND_URL": "https://dev-api.deephorizon.io",
         "EXPO_PUBLIC_BACKEND_VERSION": "v1",
-        "EXPO_PUBLIC_WEBSOCKET_URL": "https://dev-api.deephorizon.io"
+        "EXPO_PUBLIC_WEBSOCKET_URL": "https://dev-api.deephorizon.io",
+        "EXPO_PUBLIC_SUPABASE_URL": "https://byyngkutlttzmlhknnmp.supabase.co",
+        "EXPO_PUBLIC_SUPABASE_ANON_KEY": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJ5eW5na3V0bHR0em1saGtubm1wIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTQ1NjkzMzQsImV4cCI6MjA3MDE0NTMzNH0.otkdKc3hLJN1P-TRpadH0KxqQhsVfl0J5sNZAinjH14",
+        "EXPO_PUBLIC_STREAM_API_KEY": "hp84m8c435v6",
+        "EXPO_PUBLIC_STREAM_TOKEN_URL": "https://deep-horizon-dashboard.vercel.app/api/stream/video-token",
+        "EXPO_PUBLIC_AGENT_DASHBOARD_URL": "https://deep-horizon-dashboard.vercel.app",
+        "EXPO_PUBLIC_RAZORPAY_KEY_ID": "rzp_test_SayNr7cFGKjHVs"
       },
       "ios": {
         "resourceClass": "m-medium"

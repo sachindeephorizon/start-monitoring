@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+.expo
+*.ipa
+android/build
+android/app/build
+android/.gradle
+ios/build
+ios/Pods

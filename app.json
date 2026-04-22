@@ -61,7 +61,11 @@
         "RECORD_AUDIO",
         "FOREGROUND_SERVICE",
         "FOREGROUND_SERVICE_LOCATION",
-        "POST_NOTIFICATIONS"
+        "POST_NOTIFICATIONS",
+        "SCHEDULE_EXACT_ALARM",
+        "USE_EXACT_ALARM",
+        "RECEIVE_BOOT_COMPLETED",
+        "WAKE_LOCK"
       ]
     },
     "web": {
