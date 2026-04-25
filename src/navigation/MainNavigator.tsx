@@ -74,7 +74,15 @@ export type MainStackParamList = {
         startedAt?: number;
       }
     | undefined;
-  SessionSummary: { elapsedSeconds?: number } | undefined;
+  SessionSummary:
+    | {
+        elapsedSeconds?: number;
+        distanceMeters?: number;
+        totalPings?: number;
+        checkinCount?: number;
+        escalationCount?: number;
+      }
+    | undefined;
   Escalation: undefined;
   // TODO: Add these when screens are implemented
   // VideoCall: { sessionId: string; roomCode: string };

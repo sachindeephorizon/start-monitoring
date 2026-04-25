@@ -7,6 +7,7 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { styles } from './CheckInPromptScreen.styles';
 import { useAuth } from '@/core/auth';
 import { useMonitoringSession } from '@/features/monitoring/MonitoringSession';
+import { cancelAllCheckInNotificationsByTag } from '@/features/monitoring/CheckInWatcher';
 import {
   checkinStart,
   checkinRespond,
@@ -109,6 +110,12 @@ const CheckInPromptScreen: React.FC = () => {
     if (submitting) return;
     setSubmitting(true);
     if (intervalRef.current) clearInterval(intervalRef.current);
+    // Pre-emptively cancel the pending missed-check-in alarm BEFORE the
+    // network call. Without this, a slow /checkin/respond call lets the
+    // 30s missed alarm fire in the gap between tap and applyCheckinUpdate
+    // → user sees a false "Check-in missed" notification seconds after
+    // they already marked themselves safe.
+    cancelAllCheckInNotificationsByTag().catch(() => {});
     if (userId) {
       try {
         const r = await checkinRespond(userId, true);
@@ -132,6 +139,18 @@ const CheckInPromptScreen: React.FC = () => {
     if (submitting) return;
     setSubmitting(true);
     if (intervalRef.current) clearInterval(intervalRef.current);
+    // The user is entering escalation — they're responding to the prompt
+    // deliberately, not missing it. Cancel the pending "missed" alarm so
+    // they don't get a ghost notification while the EscalationScreen is
+    // already alerting them.
+    cancelAllCheckInNotificationsByTag().catch(() => {});
+    // Flip the local tier engine FIRST. This recomputes nextCheckinAt off
+    // lastCheckinAt + T3_INTERVAL synchronously (no network wait), so the
+    // countdown UI flips to the T3 cadence immediately. Without this, the
+    // backend's /respond { is_safe: false } response doesn't include
+    // next_checkin_at — the screen would show the stale T1 deadline until
+    // the next tier shift.
+    monitoring.pushTierSignal('user_needs_help');
     if (userId) {
       try {
         const r = await checkinRespond(userId, false);

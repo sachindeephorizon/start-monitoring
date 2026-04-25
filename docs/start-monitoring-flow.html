@@ -1,0 +1,489 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Start Monitoring — End-to-End Flow</title>
+<style>
+  @page { size: A4; margin: 14mm 14mm 16mm 14mm; }
+  html { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    color: #111;
+    line-height: 1.42;
+    font-size: 10.5pt;
+    margin: 0;
+  }
+  h1 {
+    font-size: 20pt;
+    margin: 0 0 4pt 0;
+    letter-spacing: -0.3pt;
+  }
+  .subtitle {
+    color: #666;
+    font-size: 10pt;
+    margin-bottom: 20pt;
+    border-bottom: 1px solid #ddd;
+    padding-bottom: 10pt;
+  }
+  h2 {
+    font-size: 13pt;
+    margin-top: 20pt;
+    margin-bottom: 6pt;
+    padding-bottom: 4pt;
+    border-bottom: 1px solid #ccc;
+    page-break-after: avoid;
+  }
+  h3 {
+    font-size: 11pt;
+    margin-top: 12pt;
+    margin-bottom: 4pt;
+    page-break-after: avoid;
+  }
+  p { margin: 4pt 0; }
+  ul, ol { margin: 4pt 0 4pt 18pt; padding: 0; }
+  li { margin: 2pt 0; }
+  code {
+    font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
+    font-size: 9pt;
+    background: #f4f4f4;
+    padding: 1px 4px;
+    border-radius: 2px;
+    color: #c7254e;
+  }
+  pre {
+    font-family: "SF Mono", Menlo, Consolas, "Courier New", monospace;
+    font-size: 8.5pt;
+    background: #f7f7f7;
+    border: 1px solid #e3e3e3;
+    border-radius: 3px;
+    padding: 8px 10px;
+    overflow: visible;
+    white-space: pre;
+    page-break-inside: avoid;
+    margin: 6pt 0;
+    line-height: 1.35;
+  }
+  pre code { background: transparent; padding: 0; color: #222; }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 6pt 0 10pt 0;
+    font-size: 9.5pt;
+    page-break-inside: avoid;
+  }
+  th, td {
+    text-align: left;
+    padding: 4pt 6pt;
+    border-bottom: 1px solid #e3e3e3;
+    vertical-align: top;
+  }
+  th {
+    background: #f3f3f3;
+    font-weight: 600;
+    border-bottom: 1.5px solid #aaa;
+  }
+  tr:nth-child(even) td { background: #fafafa; }
+  .muted { color: #666; }
+  .tag {
+    display: inline-block;
+    padding: 1px 6px;
+    border-radius: 3px;
+    font-size: 8.5pt;
+    font-weight: 600;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  .tag-fg { background: #dbeafe; color: #1e40af; }
+  .tag-bg { background: #fef3c7; color: #92400e; }
+  .tag-be { background: #dcfce7; color: #166534; }
+  .tag-soc { background: #fce7f3; color: #9d174d; }
+  .page-break { page-break-before: always; }
+  footer {
+    margin-top: 20pt;
+    border-top: 1px solid #ddd;
+    padding-top: 8pt;
+    color: #666;
+    font-size: 9pt;
+  }
+</style>
+</head>
+<body>
+
+<h1>Start Monitoring — End-to-End Flow</h1>
+<div class="subtitle">DeepHorizon Security · Mobile ↔ rewp2 ↔ SOC · Technical reference</div>
+
+<h2>0. The actors</h2>
+<table>
+<thead><tr><th>Layer</th><th>Path</th><th>Role</th></tr></thead>
+<tbody>
+<tr><td><span class="tag tag-fg">Mobile UI</span></td><td><code>src/screens/HomeScreen.tsx</code></td><td>"Start Monitoring" button</td></tr>
+<tr><td><span class="tag tag-fg">Mobile state</span></td><td><code>src/features/monitoring/MonitoringSession.tsx</code></td><td>Provider — owns session lifecycle</td></tr>
+<tr><td><span class="tag tag-bg">Mobile BG task</span></td><td><code>src/features/monitoring/backgroundLocation.ts</code></td><td><code>TaskManager.defineTask</code> — OS-delivered GPS</td></tr>
+<tr><td><span class="tag tag-fg">Mobile tier engine</span></td><td><code>src/features/monitoring/tierSignal.ts</code></td><td>Local T1→T2→T3 decisions</td></tr>
+<tr><td><span class="tag tag-fg">Mobile check-in</span></td><td><code>src/features/monitoring/CheckInWatcher.tsx</code></td><td>Foreground tick + <code>expo-notifications</code></td></tr>
+<tr><td><span class="tag tag-fg">Mobile API</span></td><td><code>src/api/monitoring.ts</code></td><td>Thin HTTP wrappers</td></tr>
+<tr><td><span class="tag tag-be">rewp2 — tier brain</span></td><td><code>rewp2/src/routes/</code></td><td><code>entry.ts</code>, <code>checkin.ts</code>, <code>escalation.ts</code>, <code>tracking.ts</code></td></tr>
+<tr><td><span class="tag tag-soc">rewp2 — SOC</span></td><td><code>rewp2/src/services/soc.dispatch.service.ts</code></td><td>Outbox + fanout</td></tr>
+<tr><td><span class="tag tag-be">location_service</span></td><td>backend2</td><td>Stateless GPS recorder</td></tr>
+<tr><td><span class="tag tag-soc">new-dashboard</span></td><td>SOC Next.js app</td><td>Consumer of <code>soc:event</code></td></tr>
+</tbody>
+</table>
+
+<h2>1. The tap — <code>startSession()</code></h2>
+<p>User taps <strong>"Start Monitoring"</strong> in <code>HomeScreen.tsx</code>:</p>
+<pre><code>const monitoring = useMonitoringSession();
+monitoring.startSession({ tripType: 'cab' });</code></pre>
+
+<h3>Phase A — synchronous (returns instantly, navigates to QuickStart)</h3>
+<table>
+<thead><tr><th>#</th><th>What happens</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>Reset refs: <code>sequenceRef=0</code>, <code>sessionIdRef='sm_{timestamp}'</code>, <code>tierRef=1</code>, <code>destinationRef=null</code>, <code>autoStoppedRef=false</code></td></tr>
+<tr><td>2</td><td>Clear stale distance from prior session (<code>SecureStore.deleteItemAsync</code> on <code>distanceM</code>, <code>lastLat</code>, <code>lastLng</code>)</td></tr>
+<tr><td>3</td><td>Write <code>lastCheckinAt</code> to SecureStore (seed for check-in anchor)</td></tr>
+<tr><td>4</td><td>Spawn <code>new TierSignalService()</code> → store in <code>tierServiceRef</code></td></tr>
+<tr><td>5</td><td>Register <code>tierService.onTierChange()</code> — on tier flip: recompute <code>nextCheckinAt</code>, call <code>reconfigureForTier()</code></td></tr>
+<tr><td>6</td><td>Compute <code>t1DueIso = startMs + TIER_INTERVAL_MIN[1]</code></td></tr>
+<tr><td>7</td><td><code>setState({ isActive: true, startedAt, tier: 1, nextCheckinAt: t1DueIso, ... })</code></td></tr>
+</tbody>
+</table>
+
+<h3>Phase B — deferred async (doesn't block UI)</h3>
+<table>
+<thead><tr><th>#</th><th>Call</th><th>What it does</th></tr></thead>
+<tbody>
+<tr><td>1</td><td><code>Promise.all([SecureStore.setItemAsync(...)])</code></td><td>Writes <code>active='true'</code>, <code>userId</code>, <code>sessionId</code>, <code>startedAt</code>, <code>tripType</code>, <code>appState</code>, <code>sequence=0</code> — the <strong>bridge to the background task</strong></td></tr>
+<tr><td>2</td><td><code>entryStart(userId)</code></td><td><code>POST /handling/entry</code> → rewp2 creates <code>sessionStore[userId]</code>, calls location_service <code>/tracking/start</code></td></tr>
+<tr><td>3</td><td><code>Location.getCurrentPositionAsync({ Balanced })</code></td><td>Seed GPS fix, stored in <code>latestLocationRef</code></td></tr>
+<tr><td>4</td><td><code>sendPingFromLatestRef.current?.()</code></td><td>Fires immediate first ping so <code>/users/active</code> populates fast</td></tr>
+<tr><td>5</td><td><code>restartBackgroundForTier(1)</code></td><td>Registers the background location task (§3)</td></tr>
+<tr><td>6</td><td><code>startWatcherForTier(1)</code></td><td>Starts foreground GPS watcher (§2)</td></tr>
+<tr><td>7</td><td><code>Location.requestBackgroundPermissionsAsync()</code></td><td>Asks for <code>ACCESS_BACKGROUND_LOCATION</code></td></tr>
+</tbody>
+</table>
+
+<h2 class="page-break">2. Foreground flow (app is open)</h2>
+
+<h3>The GPS watcher</h3>
+<p><code>startWatcherForTier(tier)</code> calls <code>Location.watchPositionAsync</code> with per-tier params:</p>
+<pre><code>TIER_PROFILES[1] = { accuracy: Lowest,    pingMs: 15000, distanceM: 10, stationaryCooldownMs: 60000 }
+TIER_PROFILES[2] = { accuracy: Balanced,  pingMs: 10000, distanceM:  8, stationaryCooldownMs: 30000 }
+TIER_PROFILES[3] = { accuracy: High,      pingMs:  5000, distanceM:  4, stationaryCooldownMs:  5000 }</code></pre>
+<p>Every watcher callback stores in <code>latestLocationRef</code> and schedules <code>sendPingFromLatest()</code> via <code>pingTimerRef</code>.</p>
+
+<h3><code>sendPingFromLatest()</code> — foreground ping loop</h3>
+<pre><code>┌──────────────────────────────────────────────────────────────────┐
+│ sendPingFromLatest() — runs every T1=15s / T2=10s / T3=5s        │
+└──────────────────────────────────────────────────────────────────┘
+   │
+   ├─▶ [if no loc or no uid → bail, set status=no-fix]
+   │
+   ├─▶ Feed tier engine FIRST (before cooldown bail)
+   │     • distanceToDest = approxDistanceM(loc, destinationRef)
+   │     • nearDest = distanceToDest <= 400m
+   │     • tierEngine.reportPosition(lat, lng, nearDest)
+   │
+   ├─▶ AUTO-STOP — if distanceToDest <= 250m && !autoStoppedRef
+   │     • autoStoppedRef = true
+   │     • endSessionRef.current?.()
+   │     • return (skip ping; session is tearing down)
+   │
+   ├─▶ Stationary cooldown — if !moving && cooldown not elapsed → bail
+   │
+   ├─▶ Build PingPayload:
+   │     { lat, lng, accuracy, speed, heading, timestamp, moving,
+   │       source: 'expo-location', appState, sequence: ++seqRef,
+   │       gpsIntervalMs, sessionId }
+   │
+   ├─▶ pingLocation(uid, payload) → POST /:uid/ping ────────┐
+   │                                                          │
+   ├─◀ response { tier, filtered?, deviationAlert?,           │
+   │              inactivityFlag?, arrivalDetected?,          │
+   │              missedCheckin? }                            │
+   │                                                          │
+   ├─▶ Bridge backend signals into local tier engine:         │
+   │     deviationAlert.severity === 'long' → pushSignal('long_deviation')
+   │     deviationAlert.severity === 'short' → pushSignal('short_deviation')
+   │     inactivityFlag → pushSignal('inactivity')
+   │     missedCheckin → pushSignal('missed_checkin')
+   │                                                          │
+   └─▶ setState({ lastLocation, lastDeviation, arrivalDetected,
+                  inactivityFlag, hasFirstPing: true, ... })
+                                                              │
+                                                              ▼
+                     rewp2 /:id/ping handler (tracking.ts):
+                     1. Kalman filter GPS spikes
+                     2. H3 road-snap
+                     3. Redis PUBLISH → fanout to websocket dashboards
+                     4. Deviation check (H3 corridor, streak counter)
+                        • 3 consecutive out → deviationAlert.short
+                        • 8 consecutive out → deviationAlert.long
+                     5. Inactivity check (10 min < 30m displacement)
+                     6. Arrival check (within 200m of dest)
+                     7. Return { tier, deviationAlert?, inactivityFlag?,
+                                 arrivalDetected?, missedCheckin? }</code></pre>
+
+<h3>Polyline + remaining distance</h3>
+<p>Independent of pings, once a destination is set, <code>remainingTimerRef</code> polls <code>GET /destination/:uid/remaining</code> every 10 s → drives the Route tile.</p>
+
+<h2 class="page-break">3. Background flow (app swiped / killed / backgrounded)</h2>
+
+<h3>Registration</h3>
+<pre><code>await Location.startLocationUpdatesAsync(MONITORING_BG_TASK, {
+  accuracy: BG_ACCURACY_BY_TIER[tier],     // T1=Lowest, T2=Balanced, T3=High
+  timeInterval: BG_INTERVAL_BY_TIER[tier], // T1=60s, T2=15s, T3=5s
+  distanceInterval: 5,
+  foregroundService: {
+    notificationTitle: `Deep Horizon · Monitoring · T${tier}`,
+    notificationBody: '...',
+    notificationColor: '#1d6fa4',
+  },
+  pausesUpdatesAutomatically: false,
+});</code></pre>
+<p>This spawns an Android foreground service with a persistent notification — that's what keeps the process alive when the app is backgrounded. AndroidManifest sets <code>android:stopWithTask="false"</code> on <code>LocationTaskService</code>, so even swipe-from-Recents leaves the service running.</p>
+
+<h3>Task definition — <code>TaskManager.defineTask(MONITORING_BG_TASK, …)</code></h3>
+<p>Runs in an <strong>isolated JS context</strong> (no React, no state, no navigation):</p>
+<pre><code>OS delivers batched locations ──▶ backgroundTaskCallback({ data: { locations }, error })
+    │
+    ├─▶ Read gate from SecureStore: BG_KEYS.active === 'true' ? (else no-op)
+    │
+    ├─▶ Read bridge: userId, sessionId, appState, sequence
+    │
+    ├─▶ For each location (sorted chronologically):
+    │     1. sequence++
+    │     2. updateTraveledDistance(lat, lng, accuracy)
+    │     3. pingLocation(userId, {
+    │          ...payload,
+    │          source: 'background_task',    ← distinguishable
+    │          appState,
+    │          sequence,
+    │        })
+    │
+    └─▶ SecureStore.setItemAsync(BG_KEYS.sequence, String(sequence))</code></pre>
+<p><strong>Key fact:</strong> the background task uses the <em>same</em> <code>POST /:uid/ping</code> endpoint as the foreground. The only difference is the <code>source</code> and <code>appState</code> fields in the payload.</p>
+
+<h3>Why it works on stock Android and fails on ColorOS</h3>
+<table>
+<thead><tr><th>OS</th><th>Behavior</th></tr></thead>
+<tbody>
+<tr><td>Stock Android, Pixel</td><td>Foreground service keeps process alive indefinitely. Pings continue.</td></tr>
+<tr><td>Most OEMs</td><td>Same, with minor Doze coalescing below 15 s cadence.</td></tr>
+<tr><td>ColorOS (Oppo/Realme/OnePlus)</td><td>Kills process on swipe despite <code>stopWithTask="false"</code>. Requires user to enable "Allow background activity" + pin in Recents.</td></tr>
+</tbody>
+</table>
+
+<h3>Rehydration on cold restart</h3>
+<pre><code>BootGuard finishes → userId set → rehydrate effect in MonitoringSession.tsx:
+    1. Read BG_KEYS.active, userId, sessionId, startedAt, tripType
+    2. If active==='true' AND Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK)===true
+    3. Read nextCheckinAt, lastCheckinAt, destinationLat/Lng/Name
+    4. Spawn new TierSignalService, restore lastCheckinAtRef, destinationRef
+    5. setState({ isActive: true, destination: restored, nextCheckinAt, ... })
+    6. startWatcherForTier(1) (for foreground UI — BG is already running)
+    7. If destination restored → re-fetch polyline via GET /destination/:uid,
+                                 re-arm remaining poll</code></pre>
+
+<h2 class="page-break">4. Check-in flow</h2>
+
+<h3>Countdown source</h3>
+<p><code>state.nextCheckinAt</code> (ISO string) is the single source of truth. Computed from:</p>
+<ul>
+<li>Session start: <code>startedAt + TIER_INTERVAL_MIN[1]</code></li>
+<li>Tier shift: <code>lastCheckinAt + TIER_INTERVAL_MIN[newTier]</code></li>
+<li>Successful response: advances via <code>applyCheckinUpdate</code></li>
+</ul>
+
+<h3>CheckInWatcher.tsx — mounted once at top of nav tree</h3>
+<p><strong>Path A — Foreground tick (every 1 s):</strong></p>
+<pre><code>if (isActive && !inEscalation):
+  if now > dueMs + 30s:  pushSignal('missed_checkin') + navigate Escalation
+  elif now > dueMs:      navigate CheckInPrompt  (modal with 30s countdown)</code></pre>
+
+<p><strong>Path B — Background notifications (AlarmManager via expo-notifications):</strong></p>
+<pre><code>On every nextCheckinAt change:
+  cancelPending()
+  schedule prompt notification  at dueDate         (channelId='monitoring')
+  schedule missed notification  at dueDate + 30s</code></pre>
+
+<p><strong>Tap listener</strong> (<code>Notifications.addNotificationResponseReceivedListener</code>):</p>
+<ul>
+<li><code>type === 'monitoring_checkin'</code> → navigate to CheckInPrompt</li>
+<li><code>type === 'monitoring_checkin_missed'</code> → <code>pushSignal('missed_checkin')</code> + navigate Escalation</li>
+</ul>
+
+<h3>User responds "Safe"</h3>
+<p>CheckInPromptScreen → <code>checkinRespond(uid, true)</code> → <code>POST /handling/checkin/:uid/respond</code>:</p>
+<pre><code>rewp2:
+  session.last_response = 'safe'
+  if tier > 1: shiftTier(session, 1, 'user_confirmed_safe')
+  session.next_checkin_at = now + interval
+  response: { tier: 1, next_checkin_at, ... }</code></pre>
+
+<h3>User responds "I Need Help" OR misses window</h3>
+<ul>
+<li><strong>"Need Help"</strong> → <code>POST /handling/checkin/:uid/respond { is_safe: false }</code> → <code>shiftTier(3, 'user_needs_help')</code> + <code>dispatchToSoc('user_needs_help')</code></li>
+<li><strong>Missed</strong> → <code>POST /handling/checkin/:uid/missed</code> → <code>shiftTier(3, 'missed_checkin')</code> + <code>dispatchToSoc('checkin_missed')</code> + <code>trigger_escalation: true</code> in response</li>
+</ul>
+
+<h2>5. Tier engine — <code>tierSignal.ts</code></h2>
+<p>Local, client-side, drives GPS strategy without waiting for backend.</p>
+
+<h3>Signals</h3>
+<pre><code>type SignalType = 'inactivity' | 'short_deviation' | 'long_deviation'
+                | 'missed_checkin' | 'user_needs_help'</code></pre>
+
+<h3>Rules</h3>
+<pre><code>tier = 3 if  active.has('long_deviation') | active.has('missed_checkin') | active.has('user_needs_help')
+     = 2 if  active.has('short_deviation') | active.has('inactivity')
+     = 1 otherwise</code></pre>
+
+<h3>Inactivity detector</h3>
+<ul>
+<li><code>INACTIVITY_WINDOW_MS = 10 min</code>, <code>INACTIVITY_DISTANCE_M = 30 m</code></li>
+<li>Anchor-based: while within 30 m of anchor, dwell; if <code>now - anchor.since &gt;= 10 min</code> → push <code>'inactivity'</code></li>
+<li>Suppressed when <code>nearDest === true</code> (within 400 m of destination)</li>
+</ul>
+
+<h3>On tier change</h3>
+<pre><code>tierService.onTierChange((newTier, reason, prev) => {
+  reconfigureForTier(newTier)  // restart BG task + foreground watcher with new params
+  setState({ tier: newTier, intervalMinutes: TIER_INTERVAL_MIN[newTier], nextCheckinAt: ... })
+})</code></pre>
+
+<h2 class="page-break">6. Auto-stop on arrival (250 m)</h2>
+<p>In <code>sendPingFromLatest</code>:</p>
+<pre><code>if destinationRef && distanceToDest <= 250 && !autoStoppedRef:
+  autoStoppedRef = true
+  endSessionRef.current?.()   // latched — won't re-fire</code></pre>
+<p>Reset on <code>startSession()</code> and <code>setDestination()</code>. Destination is persisted to SecureStore so this works after cold restart.</p>
+
+<h2>7. <code>endSession()</code> — teardown</h2>
+<pre><code>stopWatchersInternal()                             ← stops FG watcher + ping timer + tier engine
+setState({ isActive: false, nextCheckinAt: null, destination: null, ... })
+SecureStore.setItemAsync(BG_KEYS.active, 'false')  ← gates BG task (silent no-op on delivery)
+SecureStore.deleteItemAsync(startedAt, tripType, nextCheckinAt, lastCheckinAt,
+                             destinationLat, destinationLng, destinationName)
+Location.stopLocationUpdatesAsync(MONITORING_BG_TASK)   ← kills the foreground service
+entryEnd(userId)                                   ← PUT /handling/entry/:uid/end
+stopTracking(userId)                               ← POST /:uid/stop → saves session + logs</code></pre>
+
+<h2>8. Full API surface</h2>
+
+<h3>Mobile → rewp2</h3>
+<table>
+<thead><tr><th>Phase</th><th>Function (monitoring.ts)</th><th>Endpoint</th><th>Triggered by</th></tr></thead>
+<tbody>
+<tr><td>Session start</td><td><code>entryStart</code></td><td><code>POST /handling/entry</code></td><td><code>startSession</code> phase B</td></tr>
+<tr><td>Session details</td><td><code>entryDetails</code></td><td><code>PUT /handling/entry/:id/details</code></td><td>Trip-type / contacts pickers</td></tr>
+<tr><td>Destination</td><td><code>setDestination</code></td><td><code>POST /destination/:id/set</code></td><td>"Set destination" UI</td></tr>
+<tr><td>Destination</td><td><code>clearDestination</code></td><td><code>POST /destination/:id/clear</code></td><td>"Clear destination"</td></tr>
+<tr><td>Destination</td><td><code>getDestination</code></td><td><code>GET /destination/:id</code></td><td>Rehydrate / polyline</td></tr>
+<tr><td>Destination</td><td><code>getDestinationRemaining</code></td><td><code>GET /destination/:id/remaining</code></td><td>10 s poll</td></tr>
+<tr><td>Pings</td><td><code>pingLocation</code></td><td><code>POST /:id/ping</code></td><td>FG watcher + BG task</td></tr>
+<tr><td>Check-in start</td><td><code>checkinStart</code></td><td><code>POST /handling/checkin/:id/start</code></td><td>After <code>entryStart</code></td></tr>
+<tr><td>Check-in respond</td><td><code>checkinRespond</code></td><td><code>POST /handling/checkin/:id/respond</code></td><td>"Safe" / "Help" tap</td></tr>
+<tr><td>Check-in missed</td><td><code>checkinMissed</code></td><td><code>POST /handling/checkin/:id/missed</code></td><td>30 s countdown expiry</td></tr>
+<tr><td>Escalation</td><td><code>escalationTrigger</code></td><td><code>POST /handling/escalation/:id/trigger</code></td><td>Missed / Need help</td></tr>
+<tr><td>Escalation</td><td><code>escalationCancel</code></td><td><code>PUT /handling/escalation/:id/safe</code></td><td>"I'm safe" on Escalation screen</td></tr>
+<tr><td>Escalation</td><td><code>escalationStatus</code></td><td><code>GET /handling/escalation/:id/status</code></td><td>Polled by UI</td></tr>
+<tr><td>Session read</td><td><code>getUserStream</code></td><td><code>GET /user/:id/stream</code></td><td>Map live follow</td></tr>
+<tr><td>Session end</td><td><code>stopTracking</code></td><td><code>POST /:id/stop</code></td><td><code>endSession</code></td></tr>
+<tr><td>Session end</td><td><code>entryEnd</code></td><td><code>PUT /handling/entry/:id/end</code></td><td><code>endSession</code></td></tr>
+<tr><td>Summary</td><td><code>entrySummary</code></td><td><code>GET /handling/entry/:id/summary</code></td><td>Post-session screen</td></tr>
+<tr><td>Events</td><td><code>getSessionEvents</code></td><td><code>GET /session/:id/events</code></td><td>Timeline</td></tr>
+</tbody>
+</table>
+
+<h3>rewp2 → outside</h3>
+<table>
+<thead><tr><th>From</th><th>To</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>shiftTier()</code></td><td><code>PUT {LOCATION_SERVICE_URL}/tracking/:uid/tier</code></td><td>Tell location_service about cadence change</td></tr>
+<tr><td><code>/entry</code></td><td><code>{LOCATION_SERVICE_URL}/tracking/start</code></td><td>Start location_service session</td></tr>
+<tr><td><code>/entry/:id/end</code></td><td><code>{LOCATION_SERVICE_URL}/tracking/:uid/stop</code></td><td>Stop location_service session</td></tr>
+<tr><td><code>dispatchToSoc()</code></td><td>Socket.IO room <code>soc:dashboard</code> + <code>SOC_WEBHOOK_URL</code></td><td>SOC fanout</td></tr>
+<tr><td><code>POST /:id/ping</code></td><td>Redis PUBLISH <code>location_updates</code></td><td>Dashboard live-follow, Socket.IO</td></tr>
+</tbody>
+</table>
+
+<h3>rewp2 internal — SOC dispatch call sites</h3>
+<table>
+<thead><tr><th>Call site</th><th>Event fired</th><th>Severity</th></tr></thead>
+<tbody>
+<tr><td><code>escalation.ts /trigger</code></td><td><code>escalation_triggered</code></td><td>critical</td></tr>
+<tr><td><code>escalation.ts /advance</code></td><td><code>escalation_advanced</code></td><td>critical</td></tr>
+<tr><td><code>escalation.ts /safe</code></td><td><code>escalation_resolved</code></td><td>info</td></tr>
+<tr><td><code>checkin.ts shiftTier()</code> when <code>newTier === 3</code></td><td><code>tier_escalated</code></td><td>critical</td></tr>
+<tr><td><code>checkin.ts /respond is_safe=false</code></td><td><code>user_needs_help</code></td><td>critical</td></tr>
+<tr><td><code>checkin.ts /missed</code></td><td><code>checkin_missed</code></td><td>critical</td></tr>
+</tbody>
+</table>
+
+<h2 class="page-break">9. Every SecureStore key in the flow</h2>
+<p>Defined in <code>backgroundLocation.ts</code> as <code>BG_KEYS</code>:</p>
+<table>
+<thead><tr><th>Key</th><th>Type</th><th>Written by</th><th>Read by</th></tr></thead>
+<tbody>
+<tr><td><code>monitoring_bg_active</code></td><td><code>'true'/'false'</code></td><td><code>startSession</code>, <code>endSession</code></td><td>BG task gate, rehydrate</td></tr>
+<tr><td><code>monitoring_bg_user_id</code></td><td>string</td><td><code>startSession</code></td><td>BG task, rehydrate</td></tr>
+<tr><td><code>monitoring_bg_session_id</code></td><td>string</td><td><code>startSession</code></td><td>BG task, rehydrate</td></tr>
+<tr><td><code>monitoring_bg_app_state</code></td><td>foreground/background</td><td>AppState listener</td><td>BG task (for ping payload)</td></tr>
+<tr><td><code>monitoring_bg_sequence</code></td><td>number</td><td>BG task (inc), FG reset</td><td>BG task</td></tr>
+<tr><td><code>monitoring_bg_started_at</code></td><td>ms epoch</td><td><code>startSession</code></td><td>rehydrate</td></tr>
+<tr><td><code>monitoring_bg_trip_type</code></td><td>cab/meeting/foot/custom</td><td><code>startSession</code></td><td>rehydrate</td></tr>
+<tr><td><code>monitoring_bg_distance_m</code></td><td>number</td><td>BG task + FG</td><td>Session summary</td></tr>
+<tr><td><code>monitoring_bg_last_lat</code> / <code>lng</code></td><td>number</td><td>BG task + FG</td><td><code>updateTraveledDistance</code></td></tr>
+<tr><td><code>monitoring_bg_next_checkin_at</code></td><td>ISO string</td><td>Ping flow, tier change</td><td>rehydrate</td></tr>
+<tr><td><code>monitoring_bg_last_checkin_at</code></td><td>ms epoch</td><td>Check-in response</td><td>rehydrate</td></tr>
+<tr><td><code>monitoring_bg_destination_lat</code> / <code>lng</code> / <code>name</code></td><td>coords + string</td><td><code>setDestination</code></td><td>rehydrate, <code>endSession</code> cleanup</td></tr>
+</tbody>
+</table>
+
+<h2>10. One-picture summary</h2>
+<pre><code>            ┌─ Start button press ─┐
+            │  HomeScreen.tsx      │
+            └──────────┬───────────┘
+                       ▼
+        ┌──────────────────────────────┐
+        │ startSession()               │
+        │  (MonitoringSession.tsx)     │
+        └──┬────────────────────────┬──┘
+           │                        │
+       syncReset                  deferred
+           │                        │
+           │           ┌────────────┼─────────────┐
+           │           ▼            ▼             ▼
+           │    entryStart   getCurrentPos   startForegroundSvc
+           │                                 (restartBGForTier)
+           ▼
+   TierSignalService                     ┌─ OS pushes GPS ─┐
+        │                                │                 ▼
+        │ onTierChange → reconfig ◀──────┤     TaskManager.defineTask
+        ▼                                │        (backgroundLocation.ts)
+   CheckInWatcher ──▶ AlarmManager       │                 │
+        │            + foreground tick   │                 ▼
+        ▼                                │         pingLocation()
+   nextCheckinAt ◀──▶ SecureStore ───────┤                 │
+        │                                │                 ▼
+        ▼                                │   rewp2 /:id/ping (tracking.ts)
+   foreground watcher ──▶ pingLocation() │        │  │    │     │
+                               │         │        │  │    │     │
+                               ▼         │   Kalman H3  dev check
+                          rewp2 /ping ───┘      │    │   inactivity
+                               │                │    │   arrival
+                  ┌────────────┼────────────┐   │    │     │
+                  ▼            ▼            ▼   ▼    ▼     ▼
+              Redis PUB    response      shiftTier ──▶ dispatchToSoc
+                  │         { tier,          │             │
+                  ▼          dev?, inact? }  ▼             ▼
+           Socket.IO                   location_service  soc_events
+        (dashboards)                    /tracking/tier    outbox
+                                                             │
+                                                             ▼
+                                                        soc:dashboard
+                                                         room + webhook</code></pre>
+
+<footer>DeepHorizon Security · Start Monitoring flow reference · generated from source on this machine</footer>
+
+</body>
+</html>

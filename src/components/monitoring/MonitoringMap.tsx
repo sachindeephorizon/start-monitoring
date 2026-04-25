@@ -96,7 +96,42 @@ const MonitoringMap: React.FC<MonitoringMapProps> = ({
   var userMarker = null;
   var destMarker = null;
   var routeLine = null;
+  // Full route from origin → destination, preserved so we can re-trim it
+  // against every new GPS fix without re-fetching. Each entry is [lat, lng].
+  var fullRoute = null;
   var firstFix = true;
+
+  // Project point P onto segment A→B in planar lat/lng space.
+  // Good enough at intra-city distances (<< 1° latitude span).
+  function projectOnSegment(plat, plng, a, b) {
+    var dy = b[0] - a[0];
+    var dx = b[1] - a[1];
+    var len2 = dx*dx + dy*dy;
+    var t = len2 > 0 ? ((plat - a[0])*dy + (plng - a[1])*dx) / len2 : 0;
+    if (t < 0) t = 0; else if (t > 1) t = 1;
+    var y = a[0] + t*dy;
+    var x = a[1] + t*dx;
+    var ey = plat - y, ex = plng - x;
+    return { t: t, d2: ey*ey + ex*ex, lat: y, lng: x };
+  }
+
+  // Rebuild routeLine to contain only the portion ahead of the user.
+  function trimRouteToUser(lat, lng) {
+    if (!fullRoute || fullRoute.length < 2) return;
+    var bestIdx = 0, bestT = 0, bestD = Infinity, bestLat = fullRoute[0][0], bestLng = fullRoute[0][1];
+    for (var i = 0; i < fullRoute.length - 1; i++) {
+      var p = projectOnSegment(lat, lng, fullRoute[i], fullRoute[i+1]);
+      if (p.d2 < bestD) {
+        bestD = p.d2; bestIdx = i; bestT = p.t; bestLat = p.lat; bestLng = p.lng;
+      }
+    }
+    var remaining = [[bestLat, bestLng]];
+    for (var j = bestIdx + 1; j < fullRoute.length; j++) remaining.push(fullRoute[j]);
+    if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
+    if (remaining.length >= 2) {
+      routeLine = L.polyline(remaining, { color:'#22c55e', weight:4, opacity:0.85 }).addTo(map);
+    }
+  }
 
   function setUser(lat, lng) {
     if (!userMarker) {
@@ -110,6 +145,7 @@ const MonitoringMap: React.FC<MonitoringMapProps> = ({
       map.setView([lat, lng], 16, { animate:false });
       firstFix = false;
     }
+    trimRouteToUser(lat, lng);
   }
 
   function setDest(lat, lng, name) {
@@ -129,8 +165,15 @@ const MonitoringMap: React.FC<MonitoringMapProps> = ({
 
   function setRoute(coords) {
     if (routeLine) { map.removeLayer(routeLine); routeLine = null; }
-    if (!coords || coords.length < 2) return;
-    routeLine = L.polyline(coords, { color:'#22c55e', weight:4, opacity:0.85 }).addTo(map);
+    fullRoute = (coords && coords.length >= 2) ? coords.slice() : null;
+    if (!fullRoute) return;
+    routeLine = L.polyline(fullRoute, { color:'#22c55e', weight:4, opacity:0.85 }).addTo(map);
+    // If a user fix is already on the map, trim immediately so the line
+    // starts from the user — not from the far-behind origin.
+    if (userMarker) {
+      var ll = userMarker.getLatLng();
+      trimRouteToUser(ll.lat, ll.lng);
+    }
   }
 
   function fitAll() {

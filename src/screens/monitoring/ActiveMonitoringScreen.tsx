@@ -146,10 +146,21 @@ const ActiveMonitoringScreen: React.FC = () => {
   const handleEnd = async () => {
     if (ending) return;
     setEnding(true);
+    // Read client-side traveled distance BEFORE endSession — the backend
+    // summary often reports 0 km because it derives from server-side trail
+    // reconstruction which can miss rapid-fire pings. The client walks
+    // haversine on every GPS fix (foreground + bg task), so this value
+    // is the authoritative on-device truth.
+    const traveledMeters = await monitoring.getTraveledMeters();
+    const counts = monitoring.getSessionCounts();
     const summary = await monitoring.endSession();
     setEnding(false);
     navigation.replace('SessionSummary', {
       elapsedSeconds: summary?.session?.durationSecs ?? elapsed,
+      distanceMeters: traveledMeters,
+      totalPings: summary?.session?.totalPings,
+      checkinCount: counts.checkins,
+      escalationCount: counts.escalations,
     });
   };
 

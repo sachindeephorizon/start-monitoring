@@ -58,6 +58,17 @@ const SessionSummaryScreen: React.FC = () => {
   const route = useRoute<any>();
   const auth = useAuth();
   const fallbackElapsed: number = route.params?.elapsedSeconds ?? 0;
+  // Client-measured distance from the active session. Trusted over the
+  // backend's distance_covered_km when the backend reports 0 (common —
+  // it derives from server-side trail reconstruction which can miss
+  // rapid pings and filtered batches).
+  const clientDistanceKm: number = Math.max(
+    0,
+    (route.params?.distanceMeters ?? 0) / 1000,
+  );
+  const totalPingsFromSession: number | undefined = route.params?.totalPings;
+  const clientCheckinCount: number = Math.max(0, route.params?.checkinCount ?? 0);
+  const clientEscalationCount: number = Math.max(0, route.params?.escalationCount ?? 0);
 
   const [summary, setSummary] = useState<BackendSummary | null>(null);
   const [loading, setLoading] = useState(true);
@@ -84,13 +95,25 @@ const SessionSummaryScreen: React.FC = () => {
     };
   }, [auth.user?.id]);
 
-  const minutes = summary?.stats.elapsed_minutes
-    ?? Math.max(1, Math.round(fallbackElapsed / 60));
-  const distanceKm = summary?.stats.distance_covered_km ?? 0;
-  const checkinCount = summary?.stats.total_checkins ?? 0;
-  const escalationCount = summary?.stats.total_escalations ?? 0;
+  // Prefer the backend minutes — it captures pauses/corrections — but fall
+  // back to the client timer if the backend summary is unavailable. Never
+  // show "0 min" for a session that clearly ran: bump to at least 1.
+  const minutes = Math.max(
+    1,
+    summary?.stats.elapsed_minutes ?? Math.round(fallbackElapsed / 60),
+  );
+  // Trust client-measured distance when the backend reports zero (common).
+  // If both are nonzero, prefer the backend (it has the full ping history).
+  const backendDistanceKm = summary?.stats.distance_covered_km ?? 0;
+  const distanceKm = backendDistanceKm > 0 ? backendDistanceKm : clientDistanceKm;
+  const backendCheckinCount = summary?.stats.total_checkins ?? 0;
+  const checkinCount = backendCheckinCount > 0 ? backendCheckinCount : clientCheckinCount;
+  const backendEscalationCount = summary?.stats.total_escalations ?? 0;
+  const escalationCount =
+    backendEscalationCount > 0 ? backendEscalationCount : clientEscalationCount;
   const tripType = summary?.trip_type ?? null;
   const destName = summary?.destination?.name ?? null;
+  const totalPings = totalPingsFromSession;
 
   const timeline: TimelineItemRender[] = (summary?.timeline ?? []).map((e) => ({
     time: formatLocalTime(e.time),
@@ -176,6 +199,12 @@ const SessionSummaryScreen: React.FC = () => {
               {escalationCount} escalation{escalationCount === 1 ? '' : 's'}
             </Text>
           </View>
+          {typeof totalPings === 'number' && totalPings > 0 ? (
+            <View style={styles.pill}>
+              <MaterialIcons name="my-location" size={12} color="#374151" />
+              <Text style={styles.pillText}>{totalPings} pings sent</Text>
+            </View>
+          ) : null}
         </View>
 
         <TouchableOpacity

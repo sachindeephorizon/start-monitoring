@@ -37,13 +37,17 @@ import { TierSignalService, SignalType } from './tierSignal';
 import { StubSignalSource } from './stubSignalSource';
 import { CheckInWatcher } from './CheckInWatcher';
 import * as SecureStore from 'expo-secure-store';
-import { MONITORING_BG_TASK, BG_KEYS } from './backgroundLocation';
+import { MONITORING_BG_TASK, BG_KEYS, updateTraveledDistance } from './backgroundLocation';
 
 // "Near destination" radius — keep in sync with rewp2:
 //   src/routes/tracking.ts → INACTIVITY_NEAR_DEST_M (= ARRIVAL_RADIUS_M * 2 = 400)
 // Used to suppress inactivity flagging when the user is essentially at
 // destination (sitting at the cab drop-off, parking, etc.).
 const NEAR_DESTINATION_M = 400;
+
+// Auto-stop monitoring when the user has arrived. Tighter than NEAR_DESTINATION_M
+// because arrival should mean "actually at the drop-off", not "approaching it".
+const AUTO_STOP_RADIUS_M = 250;
 
 // Background ping cadence per tier. The OS task gets restarted with these
 // values whenever the local tier engine flips. Android's Doze mode may
@@ -101,9 +105,9 @@ const TIER_PROFILES: Record<Tier, TierProfile> = {
 // the moment the tier engine flips, so the user doesn't keep seeing a stale
 // "in 25 min" countdown after the system already escalated to T3.
 const TIER_INTERVAL_MIN: Record<Tier, number> = {
-  1: 3,
-  2: 2,
-  3: 1,
+  1: 15,
+  2: 10,
+  3: 5,
 };
 
 const DEFAULT_TIER: Tier = 1;
@@ -182,6 +186,18 @@ export interface MonitoringSessionContextValue extends MonitoringSessionState {
     tier: Tier;
     reason: string;
   } | null;
+  /**
+   * Cumulative meters traveled in the current/just-ended session,
+   * computed client-side from GPS fixes (foreground watcher + bg task).
+   * Read this BEFORE calling endSession so the next session's reset
+   * doesn't wipe it out.
+   */
+  getTraveledMeters: () => Promise<number>;
+  /**
+   * Client-side counters kept for the summary screen. The backend often
+   * reports 0 for these in /handling/entry/:userId/summary.
+   */
+  getSessionCounts: () => { checkins: number; escalations: number };
 }
 
 const TIER_NAMES: Record<Tier, 'passive' | 'active' | 'emergency'> = {
@@ -247,9 +263,21 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   const tierServiceRef = useRef<TierSignalService | null>(null);
   const signalSourceRef = useRef<StubSignalSource | null>(null);
   const destinationRef = useRef<{ lat: number; lng: number } | null>(null);
+  // Latched once the user crosses into AUTO_STOP_RADIUS_M of destination so
+  // we don't re-enter endSession on every subsequent ping at the same spot.
+  // Reset on startSession and whenever setDestination picks a new target.
+  const autoStoppedRef = useRef<boolean>(false);
+  // Forward reference so sendPingFromLatest can call endSession even though
+  // endSession is declared later in the hook body.
+  const endSessionRef = useRef<(() => Promise<StopResponse | null>) | null>(null);
   // Mirror tripType into a ref so the empty-deps callbacks (setDestination)
   // see the latest value without recreating on every change.
   const tripTypeRef = useRef<TripType>('cab');
+  // Client-side counters for the summary screen. The backend reports 0
+  // when the /handling/entry store is empty (most common in testing), so
+  // we count locally and pass them through.
+  const checkinCountRef = useRef<number>(0);
+  const escalationCountRef = useRef<number>(0);
 
   useEffect(() => {
     userIdRef.current = userId;
@@ -298,6 +326,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         },
         (loc) => {
           latestLocationRef.current = loc;
+          // Accumulate traveled distance for the final summary. Fire-and-forget
+          // — SecureStore write latency must not block the watcher callback.
+          updateTraveledDistance(
+            loc.coords.latitude,
+            loc.coords.longitude,
+            loc.coords.accuracy,
+          );
         },
       );
     } catch (e) {
@@ -328,13 +363,8 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         distanceInterval: BG_DISTANCE_M,
         showsBackgroundLocationIndicator: true,
         foregroundService: {
-          notificationTitle: `Deep Horizon · Monitoring · T${tier}`,
-          notificationBody:
-            tier === 3
-              ? 'EMERGENCY tier — full GPS, 5 s pings.'
-              : tier === 2
-                ? 'Active tier — 10 s pings.'
-                : 'Passive tier — 30 s pings.',
+          notificationTitle: `Deep Horizon · Monitoring`,
+          notificationBody: `Your trip is being monitored in the background. Tap to return to the app.`,
           notificationColor: '#1d6fa4',
         },
         pausesUpdatesAutomatically: false,
@@ -390,15 +420,31 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     // don't starve the very detector that should fire on inactivity.
     {
       const tierEngine = tierServiceRef.current;
-      if (tierEngine) {
-        const dest = destinationRef.current;
-        const nearDest =
-          !!dest &&
-          approxDistanceM(
+      const dest = destinationRef.current;
+      const distanceToDest = dest
+        ? approxDistanceM(
             { lat: loc.coords.latitude, lng: loc.coords.longitude },
             dest,
-          ) <= NEAR_DESTINATION_M;
+          )
+        : null;
+      if (tierEngine) {
+        const nearDest = distanceToDest !== null && distanceToDest <= NEAR_DESTINATION_M;
         tierEngine.reportPosition(loc.coords.latitude, loc.coords.longitude, nearDest);
+      }
+
+      // Auto-stop once the user arrives at destination. Latch via ref so we
+      // don't re-fire on every subsequent ping at the same spot.
+      if (
+        distanceToDest !== null &&
+        distanceToDest <= AUTO_STOP_RADIUS_M &&
+        !autoStoppedRef.current
+      ) {
+        autoStoppedRef.current = true;
+        console.log(
+          `[monitoring] auto-stopping: within ${AUTO_STOP_RADIUS_M}m of destination (${distanceToDest.toFixed(0)}m)`,
+        );
+        endSessionRef.current?.().catch(() => {});
+        return;
       }
     }
 
@@ -543,7 +589,17 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       sessionIdRef.current = `sm_${Date.now()}`;
       tierRef.current = DEFAULT_TIER;
       destinationRef.current = null;
-      lastCheckinAtRef.current = Date.now();
+      autoStoppedRef.current = false;
+      const startCheckinMs = Date.now();
+      lastCheckinAtRef.current = startCheckinMs;
+
+      // Wipe any stale distance from a prior session so this one starts at 0.
+      SecureStore.deleteItemAsync(BG_KEYS.distanceM).catch(() => {});
+      SecureStore.deleteItemAsync(BG_KEYS.lastLat).catch(() => {});
+      SecureStore.deleteItemAsync(BG_KEYS.lastLng).catch(() => {});
+      SecureStore.setItemAsync(BG_KEYS.lastCheckinAt, String(startCheckinMs)).catch(() => {});
+      checkinCountRef.current = 0;
+      escalationCountRef.current = 0;
 
       // Spin up the local tier engine synchronously — it drives every
       // tier-change UI update and adapts the GPS watcher when shifts occur.
@@ -570,6 +626,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         }));
       });
 
+      // Stamp session start NOW (before the deferred block) so it can be
+      // persisted to SecureStore for rehydration and reused below when we
+      // seed the initial check-in deadline.
+      const startMs = Date.now();
+      const t1IntervalMin = TIER_INTERVAL_MIN[DEFAULT_TIER];
+      const t1DueIso = new Date(startMs + t1IntervalMin * 60_000).toISOString();
+
       // ── DEFERRED async path — runs in the background after we return.
       // None of these block navigation. The user gets to QuickStart now;
       // the OS native calls + first ping arrive within seconds.
@@ -581,6 +644,8 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           SecureStore.setItemAsync(BG_KEYS.sessionId, sessionIdRef.current ?? ''),
           SecureStore.setItemAsync(BG_KEYS.appState, AppState.currentState),
           SecureStore.setItemAsync(BG_KEYS.sequence, '0'),
+          SecureStore.setItemAsync(BG_KEYS.startedAt, String(startMs)),
+          SecureStore.setItemAsync(BG_KEYS.tripType, opts?.tripType ?? tripTypeRef.current),
         ]).catch((e) =>
           console.warn('[monitoring] SecureStore bridge write failed', e),
         );
@@ -627,13 +692,6 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
 
       // (The first ping fires from the deferred block above as soon as
       // the seed location resolves — no need to fire one here.)
-
-      // Seed the initial deadline locally — the engine doesn't fire
-      // onTierChange for the default tier, so without this the countdown
-      // would stay null until the first tier shift.
-      const startMs = Date.now();
-      const t1IntervalMin = TIER_INTERVAL_MIN[DEFAULT_TIER];
-      const t1DueIso = new Date(startMs + t1IntervalMin * 60_000).toISOString();
 
       setState((s) => ({
         ...s,
@@ -691,6 +749,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     // SecureStore "active" gate to false BEFORE stopping the task, so any
     // in-flight delivery silently no-ops instead of pinging.
     SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.startedAt).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.tripType).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.nextCheckinAt).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.lastCheckinAt).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.destinationLat).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.destinationLng).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.destinationName).catch(() => {});
     Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK)
       .then((started) => {
         if (started) {
@@ -711,6 +776,10 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       return null;
     }
   }, [stopWatchersInternal]);
+
+  useEffect(() => {
+    endSessionRef.current = endSession;
+  }, [endSession]);
 
   const setDestination = useCallback(
     async (dest: MonitoringDestination) => {
@@ -734,6 +803,15 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           tripTypeRef.current,
         );
         destinationRef.current = { lat: dest.lat, lng: dest.lng };
+        autoStoppedRef.current = false;
+        // Persist the destination so it survives app-swipe-from-Recents.
+        // Fire-and-forget — SecureStore writes are idempotent and a failure
+        // here just means the next cold start will lose the target.
+        Promise.all([
+          SecureStore.setItemAsync(BG_KEYS.destinationLat, String(dest.lat)),
+          SecureStore.setItemAsync(BG_KEYS.destinationLng, String(dest.lng)),
+          SecureStore.setItemAsync(BG_KEYS.destinationName, dest.name ?? ''),
+        ]).catch(() => {});
         setState((s) => ({
           ...s,
           destination: {
@@ -783,6 +861,11 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       remainingTimerRef.current = null;
     }
     destinationRef.current = null;
+    Promise.all([
+      SecureStore.deleteItemAsync(BG_KEYS.destinationLat),
+      SecureStore.deleteItemAsync(BG_KEYS.destinationLng),
+      SecureStore.deleteItemAsync(BG_KEYS.destinationName),
+    ]).catch(() => {});
     setState((s) => ({
       ...s,
       destination: null,
@@ -801,6 +884,9 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   // expiry pushes 'missed_checkin' to drop straight into Tier 3).
   const pushTierSignal = useCallback((type: SignalType) => {
     tierServiceRef.current?.pushSignal(type);
+    if (type === 'missed_checkin' || type === 'long_deviation') {
+      escalationCountRef.current += 1;
+    }
   }, []);
 
   const clearTierSignal = useCallback((type: SignalType) => {
@@ -810,6 +896,25 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   const getEngineDebug = useCallback(() => {
     return tierServiceRef.current?.getDebugSnapshot() ?? null;
   }, []);
+
+  const getTraveledMeters = useCallback(async (): Promise<number> => {
+    try {
+      const raw = await SecureStore.getItemAsync(BG_KEYS.distanceM);
+      if (!raw) return 0;
+      const n = Number(raw);
+      return Number.isFinite(n) && n >= 0 ? n : 0;
+    } catch {
+      return 0;
+    }
+  }, []);
+
+  const getSessionCounts = useCallback(
+    () => ({
+      checkins: checkinCountRef.current,
+      escalations: escalationCountRef.current,
+    }),
+    [],
+  );
 
   const setTripType = useCallback((t: TripType) => {
     tripTypeRef.current = t;
@@ -822,7 +927,10 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       // just successfully checked in. Re-anchor the countdown baseline so
       // a subsequent tier shift recomputes from "now", not session start.
       if (update.nextCheckinAt) {
-        lastCheckinAtRef.current = Date.now();
+        const now = Date.now();
+        lastCheckinAtRef.current = now;
+        checkinCountRef.current += 1;
+        SecureStore.setItemAsync(BG_KEYS.lastCheckinAt, String(now)).catch(() => {});
       }
       setState((s) => ({
         ...s,
@@ -844,6 +952,175 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     };
   }, [stopWatchersInternal]);
 
+  // ── Rehydrate a session that outlived the JS bundle ─────────────────────
+  // When the user swipes the app from Recents (or it's killed by low-memory),
+  // the native foreground-location service keeps running (see
+  // android:stopWithTask="false" in AndroidManifest.xml). On cold relaunch,
+  // React state is empty → the UI shows "Start Monitoring" even though GPS
+  // is still pinging in the background. Detect that case and restore state.
+  const didRehydrateRef = useRef(false);
+  useEffect(() => {
+    if (didRehydrateRef.current) return;
+    if (!userId) return;              // wait for auth
+    if (state.isActive || state.isStarting) return;
+
+    didRehydrateRef.current = true;
+    (async () => {
+      try {
+        const [active, storedUid, storedSid, storedStart, storedTrip] = await Promise.all([
+          SecureStore.getItemAsync(BG_KEYS.active),
+          SecureStore.getItemAsync(BG_KEYS.userId),
+          SecureStore.getItemAsync(BG_KEYS.sessionId),
+          SecureStore.getItemAsync(BG_KEYS.startedAt),
+          SecureStore.getItemAsync(BG_KEYS.tripType),
+        ]);
+        if (active !== 'true') return;
+        if (!storedUid || storedUid !== userId) return;
+
+        // Also verify the native task is still alive — if it was killed
+        // (stopWithTask flag didn't take effect, or OEM task-killer removed
+        // it) there's nothing to resume; clear the stale flag instead.
+        const taskAlive = await Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK).catch(() => false);
+        if (!taskAlive) {
+          SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
+          return;
+        }
+
+        const startMs = Number(storedStart ?? Date.now());
+        const t1IntervalMin = TIER_INTERVAL_MIN[DEFAULT_TIER];
+        const nowMs = Date.now();
+
+        // Restore the real check-in anchors from SecureStore so scheduled
+        // notifications and the in-app countdown stay in sync. If we reset
+        // nextCheckinAt to "now + interval" on rehydration, then the stale
+        // AlarmManager entry fires at the original time → prompt appears
+        // out of sync, and missed-check-in fires even when the user didn't
+        // actually miss.
+        const [
+          storedNextCheckin,
+          storedLastCheckin,
+          storedDestLat,
+          storedDestLng,
+          storedDestName,
+        ] = await Promise.all([
+          SecureStore.getItemAsync(BG_KEYS.nextCheckinAt),
+          SecureStore.getItemAsync(BG_KEYS.lastCheckinAt),
+          SecureStore.getItemAsync(BG_KEYS.destinationLat),
+          SecureStore.getItemAsync(BG_KEYS.destinationLng),
+          SecureStore.getItemAsync(BG_KEYS.destinationName),
+        ]);
+        const restoredDestLat = storedDestLat ? Number(storedDestLat) : NaN;
+        const restoredDestLng = storedDestLng ? Number(storedDestLng) : NaN;
+        const restoredDestination: MonitoringDestination | null =
+          Number.isFinite(restoredDestLat) && Number.isFinite(restoredDestLng)
+            ? {
+                lat: restoredDestLat,
+                lng: restoredDestLng,
+                name: storedDestName ?? '',
+              }
+            : null;
+        const storedNextMs = storedNextCheckin ? new Date(storedNextCheckin).getTime() : NaN;
+        // Only trust the persisted deadline if it's still in the future or
+        // very recently past — otherwise fall back to a fresh interval.
+        const nextDueIso =
+          Number.isFinite(storedNextMs) && storedNextMs > nowMs - 60_000
+            ? new Date(storedNextMs).toISOString()
+            : new Date(nowMs + t1IntervalMin * 60_000).toISOString();
+
+        sessionIdRef.current = storedSid || `sm_${startMs}`;
+        lastCheckinAtRef.current = storedLastCheckin ? Number(storedLastCheckin) : nowMs;
+        tierRef.current = DEFAULT_TIER;
+        if (restoredDestination) {
+          destinationRef.current = {
+            lat: restoredDestination.lat,
+            lng: restoredDestination.lng,
+          };
+          autoStoppedRef.current = false;
+        }
+
+        const tierService = new TierSignalService();
+        tierServiceRef.current = tierService;
+        tierService.onTierChange((newTier, reason, prev) => {
+          console.log(`[tier] ${prev} → ${newTier} (${reason})`);
+          reconfigureForTier(newTier).catch(() => {});
+          const intervalMin = TIER_INTERVAL_MIN[newTier];
+          const baseMs = lastCheckinAtRef.current ?? Date.now();
+          const dueMs = Math.max(Date.now(), baseMs + intervalMin * 60_000);
+          setState((s) => ({
+            ...s,
+            tier: newTier,
+            tierName: TIER_NAMES[newTier],
+            intervalMinutes: intervalMin,
+            nextCheckinAt: new Date(dueMs).toISOString(),
+          }));
+        });
+
+        setState((s) => ({
+          ...s,
+          isActive: true,
+          isStarting: false,
+          startedAt: startMs,
+          tripType: (storedTrip as TripType) ?? s.tripType,
+          tier: DEFAULT_TIER,
+          tierName: TIER_NAMES[DEFAULT_TIER],
+          intervalMinutes: t1IntervalMin,
+          nextCheckinAt: nextDueIso,
+          hasFirstPing: false,
+          pingError: null,
+          destination: restoredDestination ?? s.destination,
+        }));
+
+        // Spin the foreground watcher back up so the in-app UI shows live
+        // pings. The background task is already running; this is purely
+        // for UI/diagnostic freshness while the app is open.
+        startWatcherForTier(DEFAULT_TIER).catch((e) =>
+          console.warn('[monitoring] rehydrate watcher start failed', e),
+        );
+
+        // Re-fetch polyline + remaining-distance for the restored destination
+        // so the Route tile isn't stuck showing raw coords only. Backend may
+        // have also expired the destination server-side — failure is fine.
+        if (restoredDestination) {
+          apiGetDestination(userId, { includeRoute: true })
+            .then((d) => {
+              if (d?.route && d.route.length >= 2) {
+                setState((s) => ({ ...s, routePolyline: d.route ?? null }));
+              }
+              if (d?.distance || d?.duration) {
+                setState((s) => ({
+                  ...s,
+                  destination: s.destination
+                    ? {
+                        ...s.destination,
+                        distanceMeters: d.distance ?? s.destination.distanceMeters,
+                        durationSeconds: d.duration ?? s.destination.durationSeconds,
+                      }
+                    : s.destination,
+                }));
+              }
+            })
+            .catch(() => {});
+
+          if (remainingTimerRef.current) clearInterval(remainingTimerRef.current);
+          remainingTimerRef.current = setInterval(async () => {
+            try {
+              const r = await getDestinationRemaining(userId);
+              setState((s) => ({
+                ...s,
+                remainingMeters: r.active ? r.remaining ?? null : null,
+              }));
+            } catch {
+              // ignore — transient errors
+            }
+          }, REMAINING_POLL_MS);
+        }
+        console.log(`[monitoring] rehydrated session startedAt=${new Date(startMs).toISOString()}`);
+      } catch (e) {
+        console.warn('[monitoring] rehydrate failed', e);
+      }
+    })();
+  }, [userId, state.isActive, state.isStarting, reconfigureForTier, startWatcherForTier]);
+
   // Mirror app foreground/background state into SecureStore so the
   // background task tags pings with the right `appState`. The bridge is
   // only meaningful while a session is active.
@@ -857,6 +1134,17 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     return () => sub.remove();
   }, [state.isActive]);
 
+  // Mirror nextCheckinAt to SecureStore. On app-kill + relaunch the
+  // rehydration path reads this to restore the real deadline, keeping
+  // the in-app countdown in sync with Android's AlarmManager entries.
+  useEffect(() => {
+    if (state.nextCheckinAt) {
+      SecureStore.setItemAsync(BG_KEYS.nextCheckinAt, state.nextCheckinAt).catch(() => {});
+    } else {
+      SecureStore.deleteItemAsync(BG_KEYS.nextCheckinAt).catch(() => {});
+    }
+  }, [state.nextCheckinAt]);
+
   const value = useMemo<MonitoringSessionContextValue>(
     () => ({
       ...state,
@@ -869,6 +1157,8 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       pushTierSignal,
       clearTierSignal,
       getEngineDebug,
+      getTraveledMeters,
+      getSessionCounts,
     }),
     [
       state,
@@ -881,6 +1171,8 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       pushTierSignal,
       clearTierSignal,
       getEngineDebug,
+      getTraveledMeters,
+      getSessionCounts,
     ],
   );
 

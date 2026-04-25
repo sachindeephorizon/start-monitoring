@@ -68,6 +68,34 @@ async function ensureAndroidChannel() {
   return MONITORING_CHANNEL_ID;
 }
 
+/**
+ * Cancel EVERY scheduled check-in notification by scanning pending alarms
+ * and matching our data.type tags. Critical on app cold-start: ref-based
+ * IDs from the prior process are gone, but Android's AlarmManager still
+ * holds the old alarms. Without this, stale prompts and missed-check-in
+ * alerts fire at their original times even though the session ended or
+ * the user already responded.
+ */
+export async function cancelAllCheckInNotificationsByTag(): Promise<void> {
+  try {
+    const pending = await Notifications.getAllScheduledNotificationsAsync();
+    for (const n of pending) {
+      const d = (n.content as any)?.data as Record<string, unknown> | undefined;
+      if (d?.type === NOTIFICATION_DATA_TAG || d?.type === NOTIFICATION_MISSED_TAG) {
+        try {
+          await Notifications.cancelScheduledNotificationAsync(n.identifier);
+        } catch {
+          // best-effort — continue cancelling the rest
+        }
+      }
+    }
+  } catch {
+    // getAllScheduledNotificationsAsync can fail on older OS versions;
+    // if we can't enumerate, there's nothing more we can do than rely on
+    // ref-based cancellation below.
+  }
+}
+
 function navigateToMainScreen(screen: string, params?: Record<string, unknown>) {
   if (!navigationRef.isReady()) return;
   (navigationRef as any).navigate('Main', {
@@ -148,6 +176,12 @@ export const CheckInWatcher: React.FC = () => {
     ensureNotificationHandler();
     ensureAndroidChannel();
     ensureNotificationPermission().catch(() => {});
+    // Wipe any check-in alarms that outlived the previous app process. Their
+    // IDs are lost to us (they were kept in refs that got GC'd on cold-kill),
+    // but they're still pending in Android's AlarmManager and would fire at
+    // the old scheduled times — causing prompts to appear "any time" and
+    // missed-check-in alerts when nothing was actually missed.
+    cancelAllCheckInNotificationsByTag().catch(() => {});
 
     const tapSub = Notifications.addNotificationResponseReceivedListener((res) => {
       const data = res.notification.request.content.data as Record<string, unknown>;
@@ -181,19 +215,21 @@ export const CheckInWatcher: React.FC = () => {
     };
   }, [ensureNotificationPermission, monitoring.pushTierSignal]);
 
-  // While the engine is in the escalation flow (`missed_checkin` or
-  // `long_deviation` signal active), suppress ALL check-in prompting.
-  // Otherwise the short T3 interval causes a notification storm: every
-  // T3-cycle's `nextCheckinAt` lands in the past (because lastCheckin was
-  // never updated), the watcher fires a fresh prompt + missed, the backend
-  // re-escalates, and we loop. The escalation pipeline is already alerting
-  // the user — additional check-in prompts on top are noise.
+  // While the engine is in the escalation flow (`missed_checkin`,
+  // `long_deviation`, or `user_needs_help` signal active), suppress ALL
+  // check-in prompting. Otherwise the short T3 interval causes a
+  // notification storm: every T3-cycle's `nextCheckinAt` lands in the past
+  // (because lastCheckin was never updated), the watcher fires a fresh
+  // prompt + missed, the backend re-escalates, and we loop. The escalation
+  // pipeline is already alerting the user — additional check-in prompts
+  // on top are noise.
   // Resumes the moment EscalationScreen's "I'm Safe" clears the signals.
   const dbg = monitoring.getEngineDebug();
   const inEscalation =
     !!dbg &&
     (dbg.activeSignals.includes('missed_checkin') ||
-      dbg.activeSignals.includes('long_deviation'));
+      dbg.activeSignals.includes('long_deviation') ||
+      dbg.activeSignals.includes('user_needs_help'));
 
   // ── Foreground tick: prompt when due, on any screen ────────────────────
   useEffect(() => {
@@ -255,8 +291,9 @@ export const CheckInWatcher: React.FC = () => {
   // ── Background notification: schedule at nextCheckinAt ─────────────────
   useEffect(() => {
     const cancelPending = async () => {
-      // Cancel BOTH the prompt and the missed-deadline notifications.
-      // We schedule them as a pair, so they're always cancelled as a pair.
+      // Belt-and-suspenders: cancel by ref-stored ID first (fast path),
+      // then scan all pending and cancel by tag (catches orphans left by
+      // a prior process that got killed mid-session).
       const ids = [scheduledIdRef.current, scheduledMissedIdRef.current].filter(
         (x): x is string => !!x,
       );
@@ -267,6 +304,7 @@ export const CheckInWatcher: React.FC = () => {
           // best-effort
         }
       }
+      await cancelAllCheckInNotificationsByTag();
       scheduledIdRef.current = null;
       scheduledMissedIdRef.current = null;
       scheduledForRef.current = null;

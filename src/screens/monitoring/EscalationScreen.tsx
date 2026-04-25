@@ -59,6 +59,7 @@ const EscalationScreen: React.FC = () => {
     });
     monitoring.clearTierSignal('missed_checkin');
     monitoring.clearTierSignal('long_deviation');
+    monitoring.clearTierSignal('user_needs_help');
     if (auth.user?.id) {
       try {
         const r = await escalationCancel(auth.user.id);

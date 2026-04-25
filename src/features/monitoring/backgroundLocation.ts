@@ -29,7 +29,84 @@ export const BG_KEYS = {
   sessionId: 'monitoring_bg_session_id',
   appState: 'monitoring_bg_app_state',     // 'foreground' | 'background'
   sequence: 'monitoring_bg_sequence',      // monotonic ping counter
+  // Persisted so the foreground UI can rehydrate after the JS bundle is
+  // killed (app swiped from Recents) while the native BG service keeps
+  // running. Without these, reopening the app shows "Start Monitoring"
+  // even though GPS is still pinging in the background.
+  startedAt: 'monitoring_bg_started_at',   // ms epoch
+  tripType: 'monitoring_bg_trip_type',     // TripType string
+  // Cumulative traveled distance + last known fix. Written by both the
+  // foreground watcher and the background task so the summary screen has
+  // a real number to show regardless of which path the user was on.
+  distanceM: 'monitoring_bg_distance_m',
+  lastLat: 'monitoring_bg_last_lat',
+  lastLng: 'monitoring_bg_last_lng',
+  // Check-in countdown anchors, persisted so rehydration (after app kill)
+  // restores the real deadline instead of resetting to "now + interval".
+  // Without these, stale scheduled notifications and the newly-computed
+  // deadline get out of sync → prompts fire at random times.
+  nextCheckinAt: 'monitoring_bg_next_checkin_at', // ISO string
+  lastCheckinAt: 'monitoring_bg_last_checkin_at', // ms epoch
+  // Destination persisted so rehydration restores the target the user set
+  // before the app was killed. Without these, the destination + route tile
+  // come back empty and the 250 m auto-stop can't evaluate until the user
+  // re-enters the drop-off.
+  destinationLat: 'monitoring_bg_destination_lat',
+  destinationLng: 'monitoring_bg_destination_lng',
+  destinationName: 'monitoring_bg_destination_name',
 };
+
+// Haversine distance in meters between two WGS-84 points.
+function haversineMeters(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6_371_000;
+  const toRad = (d: number) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.min(1, Math.sqrt(a)));
+}
+
+/**
+ * Add this GPS fix's contribution to the cumulative traveled distance.
+ * Filters out noisy jumps: GPS accuracy < 50m and movement < 1000m.
+ * Called from both the foreground watcher and the background task.
+ */
+export async function updateTraveledDistance(
+  lat: number,
+  lng: number,
+  accuracyM?: number | null,
+): Promise<void> {
+  try {
+    if (accuracyM != null && accuracyM > 50) return; // junk fix — skip
+    const [lastLatRaw, lastLngRaw, distRaw] = await Promise.all([
+      SecureStore.getItemAsync(BG_KEYS.lastLat),
+      SecureStore.getItemAsync(BG_KEYS.lastLng),
+      SecureStore.getItemAsync(BG_KEYS.distanceM),
+    ]);
+    const lastLat = lastLatRaw ? Number(lastLatRaw) : null;
+    const lastLng = lastLngRaw ? Number(lastLngRaw) : null;
+    let total = distRaw ? Number(distRaw) : 0;
+    if (!Number.isFinite(total)) total = 0;
+
+    if (lastLat != null && lastLng != null && Number.isFinite(lastLat) && Number.isFinite(lastLng)) {
+      const step = haversineMeters(lastLat, lastLng, lat, lng);
+      // Drop teleport-sized jumps (>1 km in one fix) — almost certainly GPS glitch.
+      if (Number.isFinite(step) && step < 1000) {
+        total += step;
+      }
+    }
+
+    await Promise.all([
+      SecureStore.setItemAsync(BG_KEYS.lastLat, String(lat)),
+      SecureStore.setItemAsync(BG_KEYS.lastLng, String(lng)),
+      SecureStore.setItemAsync(BG_KEYS.distanceM, String(total)),
+    ]);
+  } catch {
+    // Telemetry only — never break the ping pipeline.
+  }
+}
 
 // Per-task fix from expo-location. Trimmed to the fields we use.
 interface NativeLocation {
@@ -78,6 +155,13 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
       sequence += 1;
       const speed = loc.coords.speed ?? 0;
       const moving = speed > 0.6;
+      // Accumulate traveled distance on every fix, not just moving ones —
+      // filtering is accuracy/jump-based inside updateTraveledDistance.
+      await updateTraveledDistance(
+        loc.coords.latitude,
+        loc.coords.longitude,
+        loc.coords.accuracy,
+      );
       const payload: PingPayload = {
         lat: loc.coords.latitude,
         lng: loc.coords.longitude,

@@ -105,17 +105,33 @@ export interface StreamInfo {
 
 export interface StopResponse {
   ok: boolean;
-  session: {
-    id: string;
+  // Backend tears down the live signal + Redis state synchronously and
+  // sends this response immediately. `pending: true` means the durable
+  // session/location_logs rows are still being written in the background;
+  // the summary screen should fetch them by user_id (latest session) once
+  // the user lands there. Pre-fix responses lacked `pending` and embedded
+  // a nested `session` object — both shapes accepted for backwards compat.
+  pending?: boolean;
+  userId?: string;
+  startedAt?: string;
+  endedAt?: string;
+  durationSecs?: number;
+  totalPings?: number;
+  startLocation?: LatLng | null;
+  endLocation?: LatLng | null;
+  startMarker?: LatLng | null;
+  stopMarker?: LatLng | null;
+  session?: {
+    id?: string | number;
     name?: string;
-    userId: string;
-    startedAt: string;
-    endedAt: string;
-    durationSecs: number;
-    totalPings: number;
-    startLocation?: LatLng;
-    endLocation?: LatLng;
-    trail?: Array<{ lat: number; lng: number; timestamp: number }>;
+    userId?: string;
+    startedAt?: string;
+    endedAt?: string;
+    durationSecs?: number;
+    totalPings?: number;
+    startLocation?: LatLng | null;
+    endLocation?: LatLng | null;
+    trail?: Array<{ lat: number; lng: number; timestamp?: number }>;
   };
 }
 

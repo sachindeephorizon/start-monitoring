@@ -22,6 +22,7 @@ export type SignalType =
   | 'short_deviation'
   | 'long_deviation'
   | 'missed_checkin'
+  | 'user_needs_help'
   | 'inactivity'
   | 'clear_all';
 
@@ -78,6 +79,7 @@ const DECAY_CHECK_INTERVAL_MS = 30_000;      // re-check decay every 30 s
 const EMERGENCY_SIGNALS: ReadonlySet<SignalType> = new Set<SignalType>([
   'long_deviation',
   'missed_checkin',
+  'user_needs_help',
 ]);
 
 // ── Service ────────────────────────────────────────────────────────────────
