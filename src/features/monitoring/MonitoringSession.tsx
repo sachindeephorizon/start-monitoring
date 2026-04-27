@@ -15,7 +15,7 @@ import React, {
   useRef,
   useState,
 } from 'react';
-import { Alert, AppState } from 'react-native';
+import { Alert, AppState, AppStateStatus } from 'react-native';
 import * as Location from 'expo-location';
 import { useAuth } from '@/core/auth';
 import {
@@ -60,7 +60,10 @@ const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
 };
 const BG_DISTANCE_M = 5;     // tighter than foreground; OS dedupes anyway
 const BG_ACCURACY_BY_TIER: Record<Tier, Location.LocationAccuracy> = {
-  1: Location.Accuracy.Lowest,
+  // Use Balanced even in T1. Lowest produces cell-tower fixes that the
+  // backend intentionally rejects (>35 m accuracy), which makes passive
+  // monitoring look like it only works in foreground or only intermittently.
+  1: Location.Accuracy.Balanced,
   2: Location.Accuracy.Balanced,
   3: Location.Accuracy.High,
 };
@@ -80,6 +83,16 @@ function approxDistanceM(a: { lat: number; lng: number }, b: { lat: number; lng:
 const REMAINING_POLL_MS = 10_000;
 const MOVING_SPEED_MPS = 0.6;
 
+// Normalize React Native's AppState ('active'/'background'/'inactive') to the
+// 'foreground'/'background' vocabulary the background task uses. Keeps the
+// dashboard's `appState` field consistent across both ping paths — without
+// this, the foreground watcher tagged pings with 'active' while the BG task
+// tagged them with 'foreground'/'background', making the two streams look
+// like they came from different worlds.
+function normalizeAppState(s: AppStateStatus | string | null | undefined): 'foreground' | 'background' {
+  return s === 'active' || s === 'foreground' ? 'foreground' : 'background';
+}
+
 // ── Per-tier GPS strategy ──────────────────────────────────────────────────
 //   T1  passive    cell-tower / low-power, infrequent pings
 //   T2  active     balanced GPS, moderate cadence
@@ -93,8 +106,9 @@ interface TierProfile {
 }
 
 const TIER_PROFILES: Record<Tier, TierProfile> = {
-  // T1 — Lowest = cell tower / WiFi only, never powers up the GPS chip.
-  1: { accuracy: Location.Accuracy.Lowest,   pingMs: 60_000, distanceM: 100, stationaryCooldownMs: 120_000 },
+  // T1 — Balanced keeps passive mode battery-aware while still producing
+  // points accurate enough to survive the backend's strict accuracy gate.
+  1: { accuracy: Location.Accuracy.Balanced, pingMs: 60_000, distanceM: 100, stationaryCooldownMs: 120_000 },
   2: { accuracy: Location.Accuracy.Balanced, pingMs: 15_000, distanceM: 25,  stationaryCooldownMs: 60_000  },
   3: { accuracy: Location.Accuracy.High,     pingMs: 5_000,  distanceM: 5,   stationaryCooldownMs: 15_000  },
 };
@@ -125,6 +139,15 @@ export interface MonitoringDestination {
 export interface MonitoringSessionState {
   isActive: boolean;
   isStarting: boolean;
+  /**
+   * ms-epoch of the last time the app transitioned to the foreground while
+   * a session was active. Bumped by the AppState listener on every
+   * 'active' event. Including this in a screen's hooks/deps forces stale
+   * "Elapsed" / "Next check-in" counters to recompute the moment the user
+   * returns to the app, instead of showing a frozen value until the next
+   * 1 s tick of whatever interval drives them.
+   */
+  lastForegroundAt: number;
   startedAt: number | null;
   tripType: TripType;
   destination: MonitoringDestination | null;
@@ -209,6 +232,7 @@ const TIER_NAMES: Record<Tier, 'passive' | 'active' | 'emergency'> = {
 const initialState: MonitoringSessionState = {
   isActive: false,
   isStarting: false,
+  lastForegroundAt: Date.now(),
   startedAt: null,
   tripType: 'cab',
   destination: null,
@@ -397,6 +421,9 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   const sendPingFromLatestRef = useRef<(() => Promise<void>) | null>(null);
 
   const sendPingFromLatest = useCallback(async () => {
+    if (AppState.currentState !== 'active') {
+      return;
+    }
     const loc = latestLocationRef.current;
     const uid = userIdRef.current;
     if (!loc) {
@@ -464,7 +491,7 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       timestamp: loc.timestamp,
       moving,
       source: 'expo-location',
-      appState: AppState.currentState,
+      appState: normalizeAppState(AppState.currentState),
       sequence: ++sequenceRef.current,
       gpsIntervalMs: profile.pingMs,
       sessionId: sessionIdRef.current ?? undefined,
@@ -475,6 +502,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
 
     try {
       const res = await pingLocation(uid, payload);
+      // Backend says "session stopped" — bail out, don't update state, and
+      // make sure our endSession ran so the bg task gets torn down.
+      if ((res as any).stopped) {
+        console.log('[ping] backend reports session stopped — bailing');
+        endSessionRef.current?.().catch(() => {});
+        return;
+      }
       const wasFiltered = res.filtered === true;
       console.log(
         `[ping] ${wasFiltered ? 'FILTERED' : 'OK'} seq=${payload.sequence} ` +
@@ -522,14 +556,17 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       // re-bridges the signal. Tier sync happens further down via
       // pushSignal(), not here.
       const serverTier = (res.tier ?? null) as Tier | null;
+      // ── ISSUE 1 FIX: The backend only emits `deviationAlert` on threshold
+      // crossings (streak ∈ {3, 8}). Between those, alert is null even when
+      // the user is still off-corridor. The new `deviationFlag` boolean
+      // tells us "currently deviated" regardless of threshold — keep the
+      // last alert visible while flagged, clear only when flag drops.
       setState((s) => ({
         ...s,
         lastLocation: loc,
-        // Use the latest backend view directly. Holding a stale alert with
-        // `?? s.lastDeviation` would mean the Route tile says "Deviation"
-        // forever, even after the user is clearly back on track. The local
-        // tier engine handles short-term hysteresis via its own decay.
-        lastDeviation: res.deviationAlert ?? null,
+        lastDeviation: res.deviationFlag
+          ? (res.deviationAlert ?? s.lastDeviation)
+          : null,
         arrivalDetected: !!res.arrivalDetected || s.arrivalDetected,
         inactivityFlag: !!res.inactivityFlag,
         pingError: null,
@@ -544,9 +581,21 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     } catch (e: any) {
       const msg = e?.message ?? 'Ping failed';
       console.warn(`[ping] FAILED seq=${payload.sequence} err=${msg}`);
+      // Don't surface transient network errors to the user — pings happen
+      // every 5–15 s and the next one will succeed. Showing "Network Error"
+      // for every momentary connectivity blip is noise, not actionable.
+      // Detect axios network/timeout errors and downgrade them to a silent
+      // failure: bump the counter, mark the status, but keep `pingError`
+      // null so the in-app banner stays clean.
+      const isTransientNetwork =
+        e?.code === 'ERR_NETWORK' ||
+        e?.code === 'ECONNABORTED' ||
+        e?.code === 'ETIMEDOUT' ||
+        e?.message === 'Network Error' ||
+        /timeout|aborted|network/i.test(msg);
       setState((s) => ({
         ...s,
-        pingError: msg,
+        pingError: isTransientNetwork ? null : msg,
         lastPingStatus: 'error',
         pingCountFailed: s.pingCountFailed + 1,
       }));
@@ -642,7 +691,14 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           SecureStore.setItemAsync(BG_KEYS.active, 'true'),
           SecureStore.setItemAsync(BG_KEYS.userId, userId),
           SecureStore.setItemAsync(BG_KEYS.sessionId, sessionIdRef.current ?? ''),
-          SecureStore.setItemAsync(BG_KEYS.appState, AppState.currentState),
+          // Seed appState NOW so the BG task isn't reading a stale value
+          // from a previous session — and use the same vocabulary the
+          // AppState 'change' listener uses so dashboards see consistent
+          // labels across the FG ping path and the BG ping path.
+          SecureStore.setItemAsync(
+            BG_KEYS.appState,
+            normalizeAppState(AppState.currentState),
+          ),
           SecureStore.setItemAsync(BG_KEYS.sequence, '0'),
           SecureStore.setItemAsync(BG_KEYS.startedAt, String(startMs)),
           SecureStore.setItemAsync(BG_KEYS.tripType, opts?.tripType ?? tripTypeRef.current),
@@ -674,20 +730,24 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
             console.warn('[monitoring] could not get initial GPS fix', e),
           );
 
-        // Native task registration. Sequential because they share OS state.
+        // Request background permission BEFORE starting the native task.
+        // If Android rejects task startup while the permission dialog is
+        // still pending, the session appears to work only in foreground.
         try {
-          await restartBackgroundForTier(DEFAULT_TIER);
+          const bgPerm = await Location.requestBackgroundPermissionsAsync();
+          if (bgPerm.status === 'granted') {
+            await restartBackgroundForTier(DEFAULT_TIER);
+          } else {
+            console.warn('[monitoring] background location permission not granted; background pings disabled');
+          }
         } catch (e) {
-          console.warn('[monitoring] restartBackgroundForTier failed', e);
+          console.warn('[monitoring] background permission / restart failed', e);
         }
         try {
           await startWatcherForTier(DEFAULT_TIER);
         } catch (e) {
           console.warn('[monitoring] startWatcherForTier failed', e);
         }
-
-        // Background background-permission ask — non-blocking.
-        Location.requestBackgroundPermissionsAsync().catch(() => {});
       })();
 
       // (The first ping fires from the deferred block above as soon as
@@ -1127,9 +1187,41 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   useEffect(() => {
     const sub = AppState.addEventListener('change', (next) => {
       if (!state.isActive) return;
-      const flag =
-        next === 'active' ? 'foreground' : next === 'background' ? 'background' : next;
+      const flag = normalizeAppState(next);
       SecureStore.setItemAsync(BG_KEYS.appState, flag).catch(() => {});
+
+      // ── Hand off to background task on backgrounding ──────────────────
+      // The setInterval that drives sendPingFromLatest can race the
+      // `AppState.currentState !== 'active'` guard for one or two ticks
+      // when the OS first backgrounds the app — those late pings get
+      // tagged `source: expo-location` even though the app is no longer
+      // foregrounded, which is misleading on the dashboard. Killing the
+      // interval here is deterministic: from the moment the OS reports
+      // background, every ping comes from the BG task with
+      // `source: background_task`.
+      if (flag === 'background') {
+        if (pingTimerRef.current) {
+          clearInterval(pingTimerRef.current);
+          pingTimerRef.current = null;
+        }
+      } else if (flag === 'foreground') {
+        // Bump the foreground timestamp so any screen consuming
+        // `lastForegroundAt` re-renders immediately on return-to-app.
+        // Stale "Elapsed" / "Next check-in" counters refresh now instead
+        // of waiting for the next 1 s tick of whatever drives them.
+        setState((s) => ({ ...s, lastForegroundAt: Date.now() }));
+
+        // Returning to foreground — re-arm the FG ping cadence at the
+        // current tier. (The location watcher itself was never stopped;
+        // it kept feeding `latestLocationRef`. We only restart the timer
+        // that triggers backend pings.)
+        if (!pingTimerRef.current) {
+          const tierProfile = TIER_PROFILES[tierRef.current];
+          pingTimerRef.current = setInterval(() => {
+            sendPingFromLatestRef.current?.();
+          }, tierProfile.pingMs);
+        }
+      }
     });
     return () => sub.remove();
   }, [state.isActive]);

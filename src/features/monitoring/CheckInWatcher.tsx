@@ -119,7 +119,17 @@ function navigateToEscalation() {
   if (!navigationRef.isReady()) return;
   const current = navigationRef.getCurrentRoute()?.name as string | undefined;
   if (current === 'Escalation') return;
-  navigateToMainScreen('Escalation');
+  // ── ISSUE 5 FIX: `navigate('Main', { screen: 'Escalation' })` only
+  // works as a *cross-navigator* call. When we're already inside the
+  // Main stack (which we always are during a session) it silently
+  // no-ops and the screen never appears. Navigate directly — Escalation
+  // is registered in MainNavigator alongside whatever screen is on top.
+  try {
+    (navigationRef as any).navigate('Escalation');
+  } catch {
+    // Fall back to the nested form for the rare case we're elsewhere.
+    navigateToMainScreen('Escalation');
+  }
 }
 
 export const CheckInWatcher: React.FC = () => {
@@ -146,6 +156,10 @@ export const CheckInWatcher: React.FC = () => {
   }, [monitoring.isActive]);
 
   const ensureNotificationPermission = useCallback(async (): Promise<boolean> => {
+    // Cache only the GRANTED outcome. If we previously saw "denied", we
+    // re-check every time so a user who flipped the toggle in system
+    // settings starts getting notifications again on the next deadline,
+    // without restarting the app.
     if (notificationPermissionGrantedRef.current === true) {
       return true;
     }
@@ -159,13 +173,18 @@ export const CheckInWatcher: React.FC = () => {
       }
 
       const granted = status === 'granted';
-      notificationPermissionGrantedRef.current = granted;
+      notificationPermissionGrantedRef.current = granted ? true : null;
       if (!granted) {
-        console.warn('[CheckInWatcher] notification permission not granted; background check-in alerts disabled');
+        console.warn(
+          `[CheckInWatcher] notification permission ${status} (canAskAgain=${existing.canAskAgain}); ` +
+            `check-in alerts will NOT fire until enabled in system settings`,
+        );
+      } else {
+        console.log('[CheckInWatcher] notification permission granted');
       }
       return granted;
     } catch (e) {
-      notificationPermissionGrantedRef.current = false;
+      notificationPermissionGrantedRef.current = null;
       console.warn('[CheckInWatcher] failed to verify notification permission', e);
       return false;
     }
@@ -314,6 +333,10 @@ export const CheckInWatcher: React.FC = () => {
       // While in escalation, cancel any pending check-in notifications too.
       // The user is already getting alerts via the escalation pipeline; we
       // don't want a stale prompt notification firing on top.
+      console.log(
+        `[CheckInWatcher] schedule bail (isActive=${monitoring.isActive}, ` +
+          `nextCheckinAt=${monitoring.nextCheckinAt ?? 'null'}, inEscalation=${inEscalation})`,
+      );
       cancelPending();
       return;
     }
@@ -322,11 +345,18 @@ export const CheckInWatcher: React.FC = () => {
     if (scheduledForRef.current === due) return; // already scheduled
 
     const dueDate = new Date(due);
-    if (!Number.isFinite(dueDate.getTime())) return;
+    if (!Number.isFinite(dueDate.getTime())) {
+      console.warn(`[CheckInWatcher] schedule bail: invalid nextCheckinAt=${due}`);
+      return;
+    }
     // If the deadline already passed, don't schedule — the foreground tick
     // will handle it. Local notification scheduling for a past time is a no-op
     // on most platforms anyway.
     if (dueDate.getTime() <= Date.now() + 1000) {
+      console.log(
+        `[CheckInWatcher] schedule bail: deadline already passed ` +
+          `(due=${dueDate.toISOString()}, now=${new Date().toISOString()})`,
+      );
       cancelPending();
       return;
     }
@@ -342,7 +372,14 @@ export const CheckInWatcher: React.FC = () => {
     (async () => {
       await cancelPending();
       const canNotify = await ensureNotificationPermission();
-      if (!canNotify) return;
+      if (!canNotify) {
+        console.warn(
+          `[CheckInWatcher] schedule SKIPPED: no notification permission. ` +
+            `Deadline at ${dueDate.toISOString()} will NOT alert the user. ` +
+            `Enable notifications in system settings to fix.`,
+        );
+        return;
+      }
       const channelId = await ensureAndroidChannel();
       try {
         // (1) The prompt notification at nextCheckinAt

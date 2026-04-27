@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>DeepHorizon · Live Map</title>
+<link
+  rel="stylesheet"
+  href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  crossorigin="anonymous"
+/>
+<style>
+  :root {
+    --bg: #0b1220;
+    --panel: #0f1828;
+    --line: #1f2c44;
+    --muted: #8d9ab1;
+    --text: #e6ecf5;
+    --accent: #1d6fa4;
+    --good: #22c55e;
+    --warn: #f59e0b;
+    --bad: #ef4444;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+    padding: 10px 14px;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    align-items: center;
+  }
+  header h1 {
+    font-size: 14px;
+    font-weight: 600;
+    letter-spacing: 0.3px;
+    margin: 0;
+    flex: 0 0 auto;
+  }
+  header h1 small {
+    color: var(--muted);
+    font-weight: 400;
+    margin-left: 6px;
+  }
+  .field {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+  }
+  .field label { color: var(--muted); }
+  .field input, .field select {
+    background: #0a1320;
+    border: 1px solid var(--line);
+    color: var(--text);
+    padding: 6px 8px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-family: inherit;
+    min-width: 280px;
+  }
+  .field input:focus, .field select:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    font-family: inherit;
+  }
+  button:hover { filter: brightness(1.1); }
+  button.ghost {
+    background: transparent;
+    border: 1px solid var(--line);
+    color: var(--text);
+  }
+  .status {
+    font-size: 11px;
+    padding: 4px 8px;
+    border-radius: 999px;
+    background: #142033;
+    border: 1px solid var(--line);
+    color: var(--muted);
+    margin-left: auto;
+  }
+  .status.connected { color: var(--good); border-color: rgba(34,197,94,0.4); }
+  .status.disconnected { color: var(--bad); border-color: rgba(239,68,68,0.4); }
+  .status.idle { color: var(--warn); border-color: rgba(245,158,11,0.4); }
+
+  main {
+    flex: 1;
+    display: grid;
+    grid-template-columns: 1fr 280px;
+    min-height: 0;
+  }
+  #map {
+    width: 100%;
+    height: 100%;
+    background: #0a1320;
+  }
+  aside {
+    background: var(--panel);
+    border-left: 1px solid var(--line);
+    padding: 14px;
+    overflow-y: auto;
+    font-size: 12px;
+  }
+  aside h2 {
+    font-size: 11px;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--muted);
+    margin: 14px 0 6px 0;
+    font-weight: 600;
+  }
+  aside h2:first-child { margin-top: 0; }
+  .kv { display: grid; grid-template-columns: 90px 1fr; gap: 4px 10px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: "SF Mono", Menlo, Consolas, monospace; word-break: break-all; }
+  .kv .v.dim { color: var(--muted); }
+  .kv .v.good { color: var(--good); }
+  .kv .v.warn { color: var(--warn); }
+  .kv .v.bad  { color: var(--bad); font-weight: 700; }
+  #log {
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+    font-size: 10.5px;
+    white-space: pre;
+    line-height: 1.4;
+    max-height: 200px;
+    overflow-y: auto;
+    background: #0a1320;
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 8px;
+    color: var(--muted);
+  }
+  .pulse {
+    width: 16px;
+    height: 16px;
+    background: var(--accent);
+    border: 3px solid white;
+    border-radius: 50%;
+    box-shadow: 0 0 0 0 rgba(29,111,164,0.7);
+    animation: pulse 1.5s infinite;
+  }
+  @keyframes pulse {
+    0%   { box-shadow: 0 0 0 0   rgba(29,111,164,0.7); }
+    70%  { box-shadow: 0 0 0 14px rgba(29,111,164,0); }
+    100% { box-shadow: 0 0 0 0   rgba(29,111,164,0); }
+  }
+
+  @media (max-width: 700px) {
+    main { grid-template-columns: 1fr; grid-template-rows: 1fr 200px; }
+    aside { border-left: none; border-top: 1px solid var(--line); }
+    .field input { min-width: 200px; }
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <h1>DeepHorizon <small>· Live Map</small></h1>
+
+  <div class="field">
+    <label for="server">Server</label>
+    <input id="server" type="text" value="https://rewp2-production.up.railway.app" />
+  </div>
+
+  <div class="field">
+    <label for="userId">User ID</label>
+    <input id="userId" type="text" placeholder="paste user uuid" />
+  </div>
+
+  <button id="connectBtn">Connect</button>
+  <button id="disconnectBtn" class="ghost" disabled>Disconnect</button>
+
+  <div class="status idle" id="status">idle</div>
+</header>
+
+<main>
+  <div id="map"></div>
+  <aside>
+    <h2>Latest fix</h2>
+    <div class="kv">
+      <span class="k">Lat</span>          <span class="v" id="lat">—</span>
+      <span class="k">Lng</span>          <span class="v" id="lng">—</span>
+      <span class="k">Speed</span>        <span class="v" id="speed">—</span>
+      <span class="k">Accuracy</span>     <span class="v" id="accuracy">—</span>
+      <span class="k">Heading</span>      <span class="v" id="heading">—</span>
+      <span class="k">App state</span>    <span class="v" id="appState">—</span>
+      <span class="k">Source</span>       <span class="v" id="source">—</span>
+      <span class="k">H3 cell</span>      <span class="v" id="h3Cell">—</span>
+      <span class="k">Server ts</span>    <span class="v" id="ts">—</span>
+      <span class="k">GPS ts</span>       <span class="v" id="gpsTs">—</span>
+      <span class="k">Updates</span>      <span class="v" id="count">0</span>
+    </div>
+
+    <h2>Safety state</h2>
+    <div class="kv">
+      <span class="k">Tier</span>         <span class="v" id="tier">—</span>
+      <span class="k">Interval</span>     <span class="v" id="interval">—</span>
+      <span class="k">Next check-in</span><span class="v" id="nextCheckin">—</span>
+      <span class="k">Deviation</span>    <span class="v" id="deviation">—</span>
+      <span class="k">Inactivity</span>   <span class="v" id="inactivity">—</span>
+      <span class="k">Missed</span>       <span class="v" id="missed">—</span>
+      <span class="k">Arrival</span>      <span class="v" id="arrival">—</span>
+      <span class="k">Ping gap</span>     <span class="v" id="pingGap">—</span>
+    </div>
+
+    <h2>Event log</h2>
+    <div id="log"></div>
+  </aside>
+</main>
+
+<script
+  src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+  crossorigin="anonymous"
+></script>
+<script
+  src="https://cdn.socket.io/4.7.5/socket.io.min.js"
+  crossorigin="anonymous"
+></script>
+
+<script>
+(() => {
+  // ── Loud diagnostic if a CDN script failed to load. A blank map or a
+  // non-responsive Connect button is almost always one of these missing
+  // (corporate proxy / firewall / offline laptop / SRI mismatch).
+  if (typeof L === 'undefined' || typeof io === 'undefined') {
+    document.body.innerHTML =
+      '<div style="padding:20px;font-family:sans-serif;background:#7f1d1d;color:#fff;line-height:1.6">' +
+      '<h2 style="margin-top:0">CDN scripts failed to load</h2>' +
+      '<p>This page needs internet access to fetch Leaflet (the map) and Socket.IO (the live stream). One or both didn\'t arrive:</p>' +
+      '<ul>' +
+      '<li>Leaflet (<code>L</code>) — ' + (typeof L === 'undefined' ? '❌ NOT loaded' : '✅ loaded') + '</li>' +
+      '<li>Socket.IO (<code>io</code>) — ' + (typeof io === 'undefined' ? '❌ NOT loaded' : '✅ loaded') + '</li>' +
+      '</ul>' +
+      '<p>Check the Network tab in DevTools for blocked requests to <code>unpkg.com</code> and <code>cdn.socket.io</code>. ' +
+      'On corporate networks you may need to allow these domains. Offline use requires bundling the libs locally.</p>' +
+      '</div>';
+    return;
+  }
+
+  // ── DOM refs
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    server: $('server'), userId: $('userId'),
+    connect: $('connectBtn'), disconnect: $('disconnectBtn'),
+    status: $('status'), log: $('log'),
+    lat: $('lat'), lng: $('lng'), speed: $('speed'),
+    accuracy: $('accuracy'), heading: $('heading'),
+    appState: $('appState'), source: $('source'), tier: $('tier'),
+    h3Cell: $('h3Cell'),
+    interval: $('interval'), nextCheckin: $('nextCheckin'),
+    deviation: $('deviation'), inactivity: $('inactivity'),
+    missed: $('missed'), arrival: $('arrival'), pingGap: $('pingGap'),
+    ts: $('ts'), gpsTs: $('gpsTs'), count: $('count'),
+  };
+
+  // Optional convenience: pre-fill via URL hash like
+  //   live-map.html#user=<uuid>&server=https://...
+  const hashParams = new URLSearchParams(location.hash.slice(1));
+  if (hashParams.get('user')) els.userId.value = hashParams.get('user');
+  if (hashParams.get('server')) els.server.value = hashParams.get('server');
+
+  // ── Map setup
+  const map = L.map('map', { zoomControl: true, attributionControl: false })
+    .setView([20, 0], 2);
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 19,
+    attribution: '© OpenStreetMap',
+  }).addTo(map);
+  L.control.attribution({ prefix: false }).addTo(map);
+
+  // Pulsing dot
+  const pulseIcon = L.divIcon({
+    className: '',
+    html: '<div class="pulse"></div>',
+    iconSize: [16, 16],
+    iconAnchor: [8, 8],
+  });
+  let marker = null;
+  const trail = L.polyline([], { color: '#1d6fa4', weight: 3, opacity: 0.7 }).addTo(map);
+  let updateCount = 0;
+  let firstFix = true;
+
+  // ── State
+  let socket = null;
+  let subscribedUserId = null;
+  let lastGpsTs = 0;
+
+  // ── UI helpers
+  const setStatus = (text, cls) => {
+    els.status.textContent = text;
+    els.status.className = `status ${cls || 'idle'}`;
+  };
+  const log = (line) => {
+    const t = new Date().toISOString().slice(11, 19);
+    els.log.textContent = `[${t}] ${line}\n${els.log.textContent}`.slice(0, 8_000);
+  };
+
+  // ── Connect
+  els.connect.addEventListener('click', () => {
+    const server = els.server.value.trim();
+    const userId = els.userId.value.trim();
+    if (!server) { alert('Enter a server URL'); return; }
+    if (!userId) { alert('Enter a user ID'); return; }
+
+    if (socket) socket.disconnect();
+    setStatus('connecting…', 'idle');
+    log(`connecting to ${server}`);
+
+    socket = io(server, {
+      transports: ['websocket'],
+      reconnection: true,
+      reconnectionDelay: 1000,
+    });
+
+    socket.on('connect', () => {
+      setStatus('connected', 'connected');
+      log(`socket connected · id=${socket.id}`);
+      // Subscribe to per-user room — rewp2 fans out per-room emits via
+      // emitToStreamRooms (event name: stream:update).
+      socket.emit('subscribe:user', { userId });
+      subscribedUserId = userId;
+    });
+
+    socket.on('disconnect', (reason) => {
+      setStatus('disconnected', 'disconnected');
+      log(`socket disconnected · ${reason}`);
+    });
+
+    socket.on('connect_error', (err) => {
+      setStatus('connect error', 'disconnected');
+      log(`connect_error · ${err.message}`);
+    });
+
+    socket.on('stream:subscribed', (p) => log(`subscribed · room=${p.room}`));
+
+    // rewp2 emits two streams. We accept both and filter by userId.
+    socket.on('locationUpdate', (data) => handleUpdate(data, 'global'));
+    socket.on('stream:update',   (data) => handleUpdate(data, 'room'));
+    socket.on('stream:stop',     (data) => {
+      if (data?.userId !== subscribedUserId) return;
+      log(`tracking_stopped`);
+      setStatus('user stopped', 'idle');
+    });
+
+    // Standalone alert events (rewp2 publishes these in addition to the
+    // enriched location_update). Handy for catching threshold crossings
+    // (deviation 3→8, inactivity, arrival) even between location pings.
+    socket.on('deviation:alert', (ev) => {
+      if (ev?.userId !== subscribedUserId) return;
+      log(`🚨 DEVIATION ${(ev.severity || ev.zone || '').toString().toUpperCase()} · streak=${ev.consecutive ?? '?'}`);
+    });
+    socket.on('inactivity:alert', (ev) => {
+      if (ev?.userId !== subscribedUserId) return;
+      log(`🚨 INACTIVITY · ${ev.windowSecs ?? '?'}s window · ${ev.maxDisplacementM ?? '?'}m`);
+    });
+    socket.on('arrival:detected', (ev) => {
+      if (ev?.userId !== subscribedUserId) return;
+      log(`✓ ARRIVAL detected at destination`);
+    });
+    socket.on('ping:gap', (ev) => {
+      if (ev?.userId !== subscribedUserId) return;
+      const sev = ev.severity === 'critical' ? '🚨' : '⚠️';
+      const gap = ev.gapSeconds != null ? `${ev.gapSeconds}s` : '?';
+      log(`${sev} PING GAP · ${gap} since last ping (${ev.severity ?? 'warning'})`);
+      els.pingGap.textContent =
+        `${gap} since last ping (${ev.severity ?? 'warning'})`;
+      els.pingGap.className = ev.severity === 'critical' ? 'v bad' : 'v warn';
+    });
+    // SOC dispatch events (handy if rewp2's SOC dispatcher is active)
+    socket.on('soc:event', (ev) => log(`soc:event · ${ev.type} · ${ev.severity}`));
+
+    els.connect.disabled = true;
+    els.disconnect.disabled = false;
+  });
+
+  els.disconnect.addEventListener('click', () => {
+    if (socket) {
+      socket.disconnect();
+      socket = null;
+    }
+    subscribedUserId = null;
+    setStatus('idle', 'idle');
+    els.connect.disabled = false;
+    els.disconnect.disabled = true;
+  });
+
+  // ── Update handler
+  function handleUpdate(data, source) {
+    if (!data || data.userId !== subscribedUserId) return;
+    if (data.stopped) {
+      setStatus('user stopped', 'idle');
+      log(`stop event received (${source})`);
+      return;
+    }
+    if (typeof data.lat !== 'number' || typeof data.lng !== 'number') return;
+
+    // Drop out-of-order GPS fixes (foreground/background race).
+    const gpsTs = typeof data.gpsTimestamp === 'number' ? data.gpsTimestamp : 0;
+    if (gpsTs && lastGpsTs && gpsTs <= lastGpsTs) return;
+    if (gpsTs) lastGpsTs = gpsTs;
+
+    updateCount += 1;
+    const latlng = [data.lat, data.lng];
+
+    if (!marker) {
+      marker = L.marker(latlng, { icon: pulseIcon }).addTo(map);
+    } else {
+      marker.setLatLng(latlng);
+    }
+
+    trail.addLatLng(latlng);
+    if (firstFix) { map.setView(latlng, 16); firstFix = false; }
+
+    // Fresh fix arrived — any prior ping_gap warning is now stale.
+    els.pingGap.textContent = '—';
+    els.pingGap.className = 'v dim';
+
+    els.lat.textContent      = data.lat.toFixed(6);
+    els.lng.textContent      = data.lng.toFixed(6);
+    els.speed.textContent    = data.speed != null
+      ? `${(data.speed * 3.6).toFixed(1)} km/h` : '—';
+    els.accuracy.textContent = data.accuracy != null ? `${data.accuracy.toFixed(0)} m` : '—';
+    els.heading.textContent  = data.heading != null ? `${data.heading.toFixed(0)}°` : '—';
+    els.appState.textContent = data.appState ?? '—';
+    els.source.textContent   = data.source ?? '—';
+    els.h3Cell.textContent   = data.h3Cell ?? '—';
+    els.ts.textContent       = data.timestamp ?? '—';
+    els.gpsTs.textContent    = gpsTs ? new Date(gpsTs).toISOString() : '—';
+    els.count.textContent    = String(updateCount);
+
+    // ── Tier
+    const tier = data.tier;
+    if (tier === 3) {
+      els.tier.textContent = `T3 · emergency`;
+      els.tier.className = 'v bad';
+    } else if (tier === 2) {
+      els.tier.textContent = `T2 · active`;
+      els.tier.className = 'v warn';
+    } else if (tier === 1) {
+      els.tier.textContent = `T1 · passive`;
+      els.tier.className = 'v good';
+    } else {
+      els.tier.textContent = '—';
+      els.tier.className = 'v dim';
+    }
+    els.interval.textContent = data.intervalMinutes != null
+      ? `${data.intervalMinutes} min` : '—';
+
+    // ── Next check-in (relative)
+    if (data.nextCheckinAt) {
+      const ms = new Date(data.nextCheckinAt).getTime() - Date.now();
+      const sign = ms >= 0 ? 'in' : 'overdue by';
+      const abs = Math.abs(ms);
+      const mins = Math.floor(abs / 60000);
+      const secs = Math.floor((abs % 60000) / 1000);
+      els.nextCheckin.textContent = `${sign} ${mins}m ${secs}s`;
+      els.nextCheckin.className = ms < 0 ? 'v bad' : ms < 60000 ? 'v warn' : 'v';
+    } else {
+      els.nextCheckin.textContent = '—';
+      els.nextCheckin.className = 'v dim';
+    }
+
+    // ── Deviation
+    if (data.deviationFlag) {
+      const sev = data.deviationSeverity;
+      const streak = data.deviationStreak ?? '?';
+      els.deviation.textContent = `${sev ? sev.toUpperCase() : 'OFF-CORRIDOR'} · streak ${streak}`;
+      els.deviation.className = sev === 'long' ? 'v bad' : 'v warn';
+    } else {
+      els.deviation.textContent = 'on route';
+      els.deviation.className = 'v good';
+    }
+
+    // ── Inactivity
+    if (data.inactivityFlag) {
+      els.inactivity.textContent = 'STATIONARY (10 min < 30 m)';
+      els.inactivity.className = 'v bad';
+    } else {
+      els.inactivity.textContent = 'moving';
+      els.inactivity.className = 'v good';
+    }
+
+    // ── Missed check-in
+    if (data.missedCheckin) {
+      els.missed.textContent = 'MISSED — escalation active';
+      els.missed.className = 'v bad';
+    } else {
+      els.missed.textContent = 'on time';
+      els.missed.className = 'v good';
+    }
+
+    // ── Arrival
+    if (data.arrivalDetected) {
+      els.arrival.textContent = 'ARRIVED at destination';
+      els.arrival.className = 'v good';
+    } else {
+      els.arrival.textContent = '—';
+      els.arrival.className = 'v dim';
+    }
+
+    // For DEV label: show severity if known, otherwise show streak count
+    // ("DEV·s2" = streak 2, no severity yet — clearer than "DEV(?)" which
+    // doesn't tell the operator how close to threshold the user is).
+    const devLabel = !data.deviationFlag
+      ? ''
+      : ` · DEV·${data.deviationSeverity ?? `s${data.deviationStreak ?? '?'}`}`;
+    log(`fix · ${data.lat.toFixed(5)}, ${data.lng.toFixed(5)} · ${source}` +
+      (data.tier ? ` · T${data.tier}` : '') +
+      devLabel +
+      (data.inactivityFlag ? ' · INACT' : '') +
+      (data.missedCheckin ? ' · MISSED' : ''));
+  }
+})();
+</script>
+</body>
+</html>

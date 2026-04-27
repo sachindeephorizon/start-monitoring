@@ -59,8 +59,18 @@ export interface PingResponse {
   reason?: string;
   forceRefresh?: boolean;
   deviationAlert?: DeviationAlert | null;
+  /**
+   * True whenever the user is CURRENTLY outside the H3 corridor
+   * (devstreak > 0), independent of whether a new threshold-crossing
+   * alert fired this ping. Use this for the persistent "deviated" UI.
+   */
+  deviationFlag?: boolean;
+  /** body.speed converted to km/h on the server. */
+  speedKmh?: number | null;
   arrivalDetected?: boolean;
   inactivityFlag?: boolean;
+  /** Set by the backend when the session was already stopped — silently ignore. */
+  stopped?: boolean;
   tier?: Tier | null;
   tierName?: 'passive' | 'active' | 'emergency' | null;
   intervalMinutes?: number | null;
@@ -141,11 +151,40 @@ export async function pingLocation(
   userId: string,
   payload: PingPayload,
 ): Promise<PingResponse> {
-  const res = await monitoringClient.post<PingResponse>(
-    `/${encodeURIComponent(userId)}/ping`,
-    payload,
-  );
-  return res.data;
+  try {
+    const res = await monitoringClient.post<PingResponse>(
+      `/${encodeURIComponent(userId)}/ping`,
+      payload,
+    );
+    return res.data;
+  } catch (e: any) {
+    // 429 (rate limited) is not an error — historically the backend
+    // throttled bursts. Treat it the same as a filtered ping.
+    if (e?.response?.status === 429) {
+      return {
+        ok: true,
+        filtered: true,
+        reason: 'rate_limited',
+      };
+    }
+    // Transient network errors (offline pocket, momentary radio blip,
+    // server cold-start) should NOT throw to the caller. Pings happen on
+    // a 5–15 s cadence; the next one will succeed. Surfacing "Network
+    // Error" toasts for every momentary disconnect is noise.
+    const isTransientNetwork =
+      e?.code === 'ERR_NETWORK' ||
+      e?.code === 'ECONNABORTED' ||
+      e?.code === 'ETIMEDOUT' ||
+      e?.message === 'Network Error';
+    if (isTransientNetwork) {
+      return {
+        ok: false,
+        filtered: true,
+        reason: 'network_error',
+      };
+    }
+    throw e;
+  }
 }
 
 export async function stopTracking(userId: string): Promise<StopResponse> {

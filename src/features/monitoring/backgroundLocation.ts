@@ -151,12 +151,18 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
       (a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0),
     );
 
-    for (const loc of sorted) {
+    // ── ISSUE 6 FIX: The OS often hands us 2-5 batched fixes per delivery.
+    // Awaiting pings sequentially with no spacing fires them ~50 ms apart
+    // and the backend's 800 ms rate-limiter rejects everything after the
+    // first with 429. Pace them just over the limit so all batched fixes
+    // make it through.
+    const PING_GAP_MS = 850;
+
+    for (let i = 0; i < sorted.length; i++) {
+      const loc = sorted[i];
       sequence += 1;
       const speed = loc.coords.speed ?? 0;
       const moving = speed > 0.6;
-      // Accumulate traveled distance on every fix, not just moving ones —
-      // filtering is accuracy/jump-based inside updateTraveledDistance.
       await updateTraveledDistance(
         loc.coords.latitude,
         loc.coords.longitude,
@@ -176,14 +182,23 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
         sessionId: sessionId ?? undefined,
       };
       try {
-        await pingLocation(userId, payload);
+        const res = await pingLocation(userId, payload);
+        // Backend says session has been stopped — stop draining the batch.
+        if ((res as any)?.stopped) {
+          console.log('[bg-task] backend reports session stopped — aborting batch');
+          await SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
+          break;
+        }
       } catch (e: any) {
         console.warn(
           `[bg-task] ping seq=${sequence} failed: ${e?.message ?? 'unknown'}`,
         );
       }
+      // Pace requests so the rate-limiter doesn't reject the rest of the batch.
+      if (i < sorted.length - 1) {
+        await new Promise((r) => setTimeout(r, PING_GAP_MS));
+      }
     }
-
     await SecureStore.setItemAsync(BG_KEYS.sequence, String(sequence));
   } catch (e: any) {
     console.warn('[bg-task] handler crashed:', e?.message ?? e);

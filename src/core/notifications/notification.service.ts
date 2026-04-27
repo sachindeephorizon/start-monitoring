@@ -1,12 +1,25 @@
 import * as Notifications from 'expo-notifications';
 import * as Device from 'expo-device';
 import { Platform } from 'react-native';
+import Constants from 'expo-constants';
 import { EXPO_PUSH_TOKEN_TYPE } from './notification.constants';
 import { createUserDevice, unregisterDevice } from '@/api/notifications';
 import { AuthSession } from '@/core/auth';
 
 
-export const PROJECT_ID = '27fb532d-c0f0-45e5-919e-0e7b9a62366d';
+// Read the EAS project ID from app config at runtime so this can never drift
+// from app.json's `extra.eas.projectId`. Hardcoding it caused a real bug:
+// the constant was pointing at the EAS Updates URL id (dffb… vs 27fb…),
+// which Expo's push service rejects as "Project not found" on Android.
+//
+// Falls back to the configured EAS project ID `dffb010e-…` so dev builds
+// work even if Constants.expoConfig.extra is somehow empty (e.g. running
+// under Metro before app.config.ts has merged its `extra`).
+export const PROJECT_ID =
+  (Constants.expoConfig?.extra as { eas?: { projectId?: string } } | undefined)
+    ?.eas?.projectId ||
+  Constants.easConfig?.projectId ||
+  'dffb010e-d230-4ff0-9124-f31c2ee40d00';
 
 
 interface DeviceInfo {
@@ -46,8 +59,18 @@ export const NotificationService = {
       }
 
       return token;
-    } catch (error) {
-      console.error('[Notification Service] register error:', error);
+    } catch (error: any) {
+      // Surface the actual cause so the next failure is debuggable. Common
+      // Android failure modes:
+      //   • "Project not found" / "Invalid projectId" — projectId mismatch
+      //     between this file and app.json's extra.eas.projectId
+      //   • "Default FirebaseApp is not initialized" — google-services.json
+      //     missing from the build or expo-build-properties not configured
+      //   • "MissingPermissionsException" — POST_NOTIFICATIONS denied
+      console.error(
+        `[Notification Service] register failed using projectId=${PROJECT_ID}: ` +
+          `${error?.code ?? 'unknown'} ${error?.message ?? error}`,
+      );
       return null;
     }
   },
