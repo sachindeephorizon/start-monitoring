@@ -18,7 +18,7 @@
  * for the same deadline.
  */
 
-import { useCallback, useEffect, useRef } from 'react';
+import React, { useCallback, useEffect, useRef } from 'react';
 import { AppState, AppStateStatus, Platform } from 'react-native';
 import * as Notifications from 'expo-notifications';
 import { useMonitoringSession } from './MonitoringSession';
@@ -122,6 +122,22 @@ export async function cancelAllCheckInNotificationsByTag(): Promise<void> {
   }
 }
 
+// On cold start from a notification tap the navigation container hasn't
+// mounted yet. Rather than silently dropping the navigation, retry until
+// the ref reports ready or the timeout elapses.
+function waitForNavReady(timeoutMs = 5000): Promise<void> {
+  return new Promise((resolve) => {
+    if (navigationRef.isReady()) { resolve(); return; }
+    const deadline = Date.now() + timeoutMs;
+    const poll = () => {
+      if (navigationRef.isReady()) { resolve(); return; }
+      if (Date.now() >= deadline) { resolve(); return; } // give up, caller handles
+      setTimeout(poll, 150);
+    };
+    setTimeout(poll, 150);
+  });
+}
+
 function navigateToMainScreen(screen: string, params?: Record<string, unknown>) {
   if (!navigationRef.isReady()) return;
   (navigationRef as any).navigate('Main', {
@@ -130,8 +146,9 @@ function navigateToMainScreen(screen: string, params?: Record<string, unknown>) 
   });
 }
 
-function navigateToPrompt(dueAt?: string | null, intervalMinutes?: number | null, startedAt?: number | null) {
-  if (!navigationRef.isReady()) return;
+async function navigateToPrompt(dueAt?: string | null, intervalMinutes?: number | null, startedAt?: number | null) {
+  await waitForNavReady();
+  if (!navigationRef.isReady()) return; // timed out
   // CheckInPrompt lives inside MainNavigator, not at the root.
   // Route through "Main" so the action is handled from the container ref.
   navigateToMainScreen('CheckInPrompt', {
@@ -141,8 +158,9 @@ function navigateToPrompt(dueAt?: string | null, intervalMinutes?: number | null
   });
 }
 
-function navigateToEscalation() {
-  if (!navigationRef.isReady()) return;
+async function navigateToEscalation() {
+  await waitForNavReady();
+  if (!navigationRef.isReady()) return; // timed out
   const current = navigationRef.getCurrentRoute()?.name as string | undefined;
   if (current === 'Escalation') return;
   // ── ISSUE 5 FIX: `navigate('Main', { screen: 'Escalation' })` only
@@ -552,6 +570,23 @@ export const CheckInWatcher: React.FC = () => {
     // including during T3/escalation. The foreground-tick effect (above)
     // still depends on it for navigation suppression.
   }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, ensureNotificationPermission]);
+
+  // ── Navigate to EscalationScreen when critical signals become active ──────
+  // The foreground tick handles navigation when it detects a passed deadline,
+  // but it's stopped while inEscalation is true. This effect covers the gap:
+  // when missed_checkin / long_deviation / user_needs_help is pushed while
+  // the screen is off (BG task → SecureStore flag → MonitoringSession foreground
+  // resume handler pushes signal), nobody else triggers navigation — so we do it
+  // here as soon as the render sees the new inEscalation state.
+  useEffect(() => {
+    if (!monitoring.isActive || !inEscalation) return;
+    // Small delay lets the navigation stack settle after the JS bundle wakes.
+    const t = setTimeout(() => {
+      navigateToEscalation().catch(() => {});
+    }, 250);
+    return () => clearTimeout(t);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [monitoring.isActive, inEscalation]);
 
   // Watcher renders nothing — it's effect-only.
   return null;

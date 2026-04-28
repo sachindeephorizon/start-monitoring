@@ -16,7 +16,12 @@
 
 import * as TaskManager from 'expo-task-manager';
 import * as SecureStore from 'expo-secure-store';
+import * as Notifications from 'expo-notifications';
 import { pingLocation, PingPayload } from '@/api/monitoring';
+
+// Must stay in sync with CheckInWatcher.tsx constants.
+const MONITORING_CHANNEL_ID = 'monitoring_v2';
+const NOTIFICATION_MISSED_TAG = 'monitoring_checkin_missed';
 
 export const MONITORING_BG_TASK = 'monitoring-background-location';
 
@@ -54,6 +59,10 @@ export const BG_KEYS = {
   destinationLat: 'monitoring_bg_destination_lat',
   destinationLng: 'monitoring_bg_destination_lng',
   destinationName: 'monitoring_bg_destination_name',
+  // Set by the background task when a ping response returns missedCheckin:true.
+  // Cleared by MonitoringSession's AppState foreground handler after the signal
+  // is pushed into the tier engine. Prevents duplicate alerts across pings.
+  missedCheckin: 'monitoring_bg_missed_checkin',
 };
 
 // Haversine distance in meters between two WGS-84 points.
@@ -181,6 +190,46 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
           console.log('[bg-task] backend reports session stopped — aborting batch');
           await SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
           break;
+        }
+
+        // Keep the stored nextCheckinAt in sync with the server's view so that
+        // when the user returns to foreground, CheckInWatcher reschedules its
+        // OS alarm against the correct deadline rather than a stale one.
+        const serverNextCheckin = (res as any)?.nextCheckinAt;
+        if (serverNextCheckin && typeof serverNextCheckin === 'string') {
+          SecureStore.setItemAsync(BG_KEYS.nextCheckinAt, serverNextCheckin).catch(() => {});
+        }
+
+        // Server detected the user missed the 30 s response window while the
+        // screen was off (app backgrounded). The foreground setInterval can't
+        // run in that state, so the OS-scheduled alarm may have fired but
+        // gone unanswered. Fire an immediate notification now and set a flag
+        // so MonitoringSession escalates the moment the screen lights up.
+        if ((res as any)?.missedCheckin === true) {
+          const alreadyFlagged = await SecureStore.getItemAsync(BG_KEYS.missedCheckin);
+          if (alreadyFlagged !== 'true') {
+            await SecureStore.setItemAsync(BG_KEYS.missedCheckin, 'true').catch(() => {});
+            try {
+              await Notifications.scheduleNotificationAsync({
+                content: {
+                  title: 'Deep Horizon · ALERT',
+                  body: 'Check-in missed. Emergency mode activated — open the app to confirm you are safe.',
+                  sound: 'default',
+                  priority: Notifications.AndroidNotificationPriority.MAX,
+                  vibrate: [0, 500, 500, 500, 500],
+                  data: { type: NOTIFICATION_MISSED_TAG },
+                },
+                trigger: {
+                  type: Notifications.SchedulableTriggerInputTypes.DATE,
+                  date: new Date(Date.now() + 500),
+                  channelId: MONITORING_CHANNEL_ID,
+                },
+              });
+              console.log('[bg-task] fired missed-checkin notification');
+            } catch (ne: any) {
+              console.warn('[bg-task] missed checkin notification failed:', ne?.message);
+            }
+          }
         }
       } catch (e: any) {
         console.warn(

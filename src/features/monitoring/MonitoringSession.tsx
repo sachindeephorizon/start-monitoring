@@ -208,6 +208,8 @@ export interface MonitoringSessionContextValue extends MonitoringSessionState {
   pushTierSignal: (type: SignalType) => void;
   /** Clear a signal (e.g. when escalation is cancelled). */
   clearTierSignal: (type: SignalType) => void;
+  /** Clear the last deviation alert and inactivity flag (call after user confirms safe). */
+  clearDeviation: () => void;
   /** Snapshot of the engine's internals — for DEV debug overlay. */
   getEngineDebug: () => {
     samples: number;
@@ -848,6 +850,7 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     SecureStore.deleteItemAsync(BG_KEYS.destinationLat).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationLng).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationName).catch(() => {});
+    SecureStore.deleteItemAsync(BG_KEYS.missedCheckin).catch(() => {});
 
     // ── PHASE 2 (deferred, no await) ────────────────────────────────────
     // Native task teardown + backend HTTP calls run in the background.
@@ -1011,6 +1014,10 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     tierServiceRef.current?.clearSignal(type);
   }, []);
 
+  const clearDeviation = useCallback(() => {
+    setState((s) => ({ ...s, lastDeviation: null, inactivityFlag: false }));
+  }, []);
+
   const getEngineDebug = useCallback(() => {
     return tierServiceRef.current?.getDebugSnapshot() ?? null;
   }, []);
@@ -1056,6 +1063,10 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         tierName: update.tier ? TIER_NAMES[update.tier] : s.tierName,
         intervalMinutes: update.intervalMinutes ?? s.intervalMinutes,
         nextCheckinAt: update.nextCheckinAt ?? s.nextCheckinAt,
+        // A new nextCheckinAt means the user just successfully responded —
+        // wipe any lingering deviation/inactivity state so the UI reflects
+        // the fresh "all clear" before the next ping arrives.
+        ...(update.nextCheckinAt ? { lastDeviation: null, inactivityFlag: false } : {}),
       }));
       if (update.tier && update.tier !== tierRef.current) {
         reconfigureForTier(update.tier).catch(() => {});
@@ -1280,6 +1291,20 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         // of waiting for the next 1 s tick of whatever drives them.
         setState((s) => ({ ...s, lastForegroundAt: Date.now() }));
 
+        // If the background task detected a missed check-in while the screen
+        // was off (and set this flag), push the signal into the tier engine
+        // now so CheckInWatcher navigates to EscalationScreen immediately.
+        SecureStore.getItemAsync(BG_KEYS.missedCheckin)
+          .then((v) => {
+            if (v === 'true') {
+              SecureStore.deleteItemAsync(BG_KEYS.missedCheckin).catch(() => {});
+              tierServiceRef.current?.pushSignal('missed_checkin');
+              escalationCountRef.current += 1;
+              console.log('[monitoring] foreground resume: BG missed-checkin flag detected — escalating');
+            }
+          })
+          .catch(() => {});
+
         // Returning to foreground — re-arm the FG ping cadence at the
         // current tier. (The location watcher itself was never stopped;
         // it kept feeding `latestLocationRef`. We only restart the timer
@@ -1320,6 +1345,7 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       applyCheckinUpdate,
       pushTierSignal,
       clearTierSignal,
+      clearDeviation,
       getEngineDebug,
       getTraveledMeters,
       getSessionCounts,
@@ -1334,6 +1360,7 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       applyCheckinUpdate,
       pushTierSignal,
       clearTierSignal,
+      clearDeviation,
       getEngineDebug,
       getTraveledMeters,
       getSessionCounts,
