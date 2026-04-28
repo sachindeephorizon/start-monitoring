@@ -151,13 +151,6 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
       (a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0),
     );
 
-    // ── ISSUE 6 FIX: The OS often hands us 2-5 batched fixes per delivery.
-    // Awaiting pings sequentially with no spacing fires them ~50 ms apart
-    // and the backend's 800 ms rate-limiter rejects everything after the
-    // first with 429. Pace them just over the limit so all batched fixes
-    // make it through.
-    const PING_GAP_MS = 850;
-
     for (let i = 0; i < sorted.length; i++) {
       const loc = sorted[i];
       sequence += 1;
@@ -193,10 +186,6 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
         console.warn(
           `[bg-task] ping seq=${sequence} failed: ${e?.message ?? 'unknown'}`,
         );
-      }
-      // Pace requests so the rate-limiter doesn't reject the rest of the batch.
-      if (i < sorted.length - 1) {
-        await new Promise((r) => setTimeout(r, PING_GAP_MS));
       }
     }
     await SecureStore.setItemAsync(BG_KEYS.sequence, String(sequence));

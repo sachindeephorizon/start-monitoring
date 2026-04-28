@@ -57,7 +57,7 @@ const AUTO_STOP_RADIUS_M = 250;
 // foreground watcher is the user-visible part of the tier shift, so it gets the full cadence change. The background task is more of a safety net for missed pings / app kills, so it's less urgent to tighten it up in T2/T3 — we just want to make sure it can still catch an escalation if the user misses a check-in while the app is in the background.
 
 const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
-  1: 60_000,  // T1 passive — 30 s, battery-sensitive
+  1: 15_000,  // T1 passive — keep cadence close to backend check-in window
   2: 15_000,  // T2 active  — 10 s
   3: 5_000,   // T3 emergency — 5 s
 };
@@ -112,7 +112,7 @@ interface TierProfile {
 const TIER_PROFILES: Record<Tier, TierProfile> = {
   // T1 — Balanced keeps passive mode battery-aware while still producing
   // points accurate enough to survive the backend's strict accuracy gate.
-  1: { accuracy: Location.Accuracy.Balanced, pingMs: 60_000, distanceM: 100, stationaryCooldownMs: 120_000 },
+  1: { accuracy: Location.Accuracy.Balanced, pingMs: 15_000, distanceM: 25,  stationaryCooldownMs: 30_000  },
   2: { accuracy: Location.Accuracy.Balanced, pingMs: 15_000, distanceM: 25,  stationaryCooldownMs: 60_000  },
   3: { accuracy: Location.Accuracy.High,     pingMs: 5_000,  distanceM: 5,   stationaryCooldownMs: 15_000  },
 };
@@ -820,25 +820,47 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     SecureStore.deleteItemAsync(BG_KEYS.destinationLat).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationLng).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationName).catch(() => {});
-    Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK)
-      .then((started) => {
-        if (started) {
-          Location.stopLocationUpdatesAsync(MONITORING_BG_TASK).catch(() => {});
-        }
-      })
-      .catch(() => {});
+    try {
+      const started = await Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK);
+      if (started) {
+        await Location.stopLocationUpdatesAsync(MONITORING_BG_TASK);
+      }
+    } catch {
+      // best-effort
+    }
 
     if (!uid) return null;
     // Tear down both layers: location-service session + /handling lifecycle.
     entryEnd(uid).catch(() => {});
-    try {
-      const res = await stopTracking(uid);
-      sessionIdRef.current = null;
-      return res;
-    } catch (e) {
-      sessionIdRef.current = null;
+    // Stop endpoint can fail transiently right when radios are changing
+    // state during app background/foreground transitions. Retry quickly so
+    // the user disappears from "live users" without requiring manual retry.
+    const stopWithRetry = async (): Promise<StopResponse | null> => {
+      for (let attempt = 1; attempt <= 3; attempt += 1) {
+        try {
+          return await stopTracking(uid);
+        } catch {
+          if (attempt < 3) {
+            await new Promise((r) => setTimeout(r, attempt * 600));
+          }
+        }
+      }
       return null;
-    }
+    };
+
+    // Do not block the UI for the full network retry budget. Users should
+    // leave ActiveMonitoring almost instantly after tapping End Trip.
+    // We wait briefly for the fast-success path and let retries continue in
+    // the background if the backend is slow.
+    const fastWindowMs = 1_500;
+    const res = await Promise.race<StopResponse | null>([
+      stopWithRetry(),
+      new Promise<StopResponse | null>((resolve) =>
+        setTimeout(() => resolve(null), fastWindowMs),
+      ),
+    ]);
+    sessionIdRef.current = null;
+    return res;
   }, [stopWatchersInternal]);
 
   useEffect(() => {
@@ -1204,6 +1226,17 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       // background, every ping comes from the BG task with
       // `source: background_task`.
       if (flag === 'background') {
+        // Defensive: some OEM builds kill the location foreground-service
+        // when app moves to background. Ensure the task is running so pings
+        // continue when screen is off.
+        Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK)
+          .then((started) => {
+            if (!started) {
+              return restartBackgroundForTier(tierRef.current);
+            }
+            return Promise.resolve();
+          })
+          .catch(() => {});
         if (pingTimerRef.current) {
           clearInterval(pingTimerRef.current);
           pingTimerRef.current = null;
@@ -1225,10 +1258,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
             sendPingFromLatestRef.current?.();
           }, tierProfile.pingMs);
         }
+        // Refresh immediately on resume so UI/status doesn't remain stale
+        // for up to one full ping interval (60s in T1).
+        sendPingFromLatestRef.current?.().catch(() => {});
       }
     });
     return () => sub.remove();
-  }, [state.isActive]);
+  }, [state.isActive, restartBackgroundForTier]);
 
   // Mirror nextCheckinAt to SecureStore. On app-kill + relaunch the
   // rehydration path reads this to restore the real deadline, keeping

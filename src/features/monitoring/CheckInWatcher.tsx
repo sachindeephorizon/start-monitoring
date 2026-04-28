@@ -158,6 +158,26 @@ function navigateToEscalation() {
   }
 }
 
+async function showForegroundBannerNow(opts: {
+  title: string;
+  body: string;
+  data: Record<string, unknown>;
+}) {
+  try {
+    await Notifications.scheduleNotificationAsync({
+      content: {
+        title: opts.title,
+        body: opts.body,
+        sound: 'default',
+        data: opts.data,
+      },
+      trigger: null,
+    });
+  } catch {
+    // best-effort — navigation path still handles the prompt
+  }
+}
+
 export const CheckInWatcher: React.FC = () => {
   const monitoring = useMonitoringSession();
 
@@ -311,6 +331,13 @@ export const CheckInWatcher: React.FC = () => {
       if (now >= dueMs + RESPONSE_WINDOW_MS) {
         lastPromptedRef.current = due;
         monitoring.pushTierSignal('missed_checkin');
+        if (appStateRef.current === 'active') {
+          showForegroundBannerNow({
+            title: 'Deep Horizon · ALERT',
+            body: 'Check-in missed. Emergency mode activated.',
+            data: { type: NOTIFICATION_MISSED_TAG, dueAt: due },
+          }).catch(() => {});
+        }
         navigateToEscalation();
         return;
       }
@@ -322,6 +349,18 @@ export const CheckInWatcher: React.FC = () => {
       }
 
       lastPromptedRef.current = due;
+      if (appStateRef.current === 'active') {
+        showForegroundBannerNow({
+          title: 'Deep Horizon · Safety check-in',
+          body: 'Are you safe? Tap to confirm - you have 30 seconds.',
+          data: {
+            type: NOTIFICATION_DATA_TAG,
+            dueAt: due,
+            intervalMinutes: monitoring.intervalMinutes ?? null,
+            startedAt: monitoring.startedAt ?? null,
+          },
+        }).catch(() => {});
+      }
       navigateToPrompt(due, monitoring.intervalMinutes, monitoring.startedAt);
     };
 
