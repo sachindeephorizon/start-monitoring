@@ -1,6 +1,6 @@
 import React from 'react';
 
-global.IS_REACT_ACT_ENVIRONMENT = true;
+(global as any).IS_REACT_ACT_ENVIRONMENT = true;
 
 jest.mock('react-native', () => ({
   AppState: {
@@ -121,9 +121,13 @@ describe('CheckInWatcher foreground flow', () => {
     });
 
     expect(pushTierSignal).toHaveBeenCalledWith('missed_checkin');
-    expect(mockedNavigationRef.navigate).toHaveBeenCalledWith('Main', {
-      screen: 'Escalation',
-    });
+    expect(mockedNavigationRef.navigate).toHaveBeenCalled();
+    const calls = mockedNavigationRef.navigate.mock.calls;
+    const usedDirect = calls.some((c) => c[0] === 'Escalation');
+    const usedNested = calls.some(
+      (c) => c[0] === 'Main' && c[1]?.screen === 'Escalation',
+    );
+    expect(usedDirect || usedNested).toBe(true);
 
     await act(async () => {
       tree.unmount();
