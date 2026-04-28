@@ -841,24 +841,13 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           return await stopTracking(uid);
         } catch {
           if (attempt < 3) {
-            await new Promise((r) => setTimeout(r, attempt * 600));
+            await new Promise((r) => setTimeout(r, attempt * 300));
           }
         }
       }
       return null;
     };
-
-    // Do not block the UI for the full network retry budget. Users should
-    // leave ActiveMonitoring almost instantly after tapping End Trip.
-    // We wait briefly for the fast-success path and let retries continue in
-    // the background if the backend is slow.
-    const fastWindowMs = 1_500;
-    const res = await Promise.race<StopResponse | null>([
-      stopWithRetry(),
-      new Promise<StopResponse | null>((resolve) =>
-        setTimeout(() => resolve(null), fastWindowMs),
-      ),
-    ]);
+    const res = await stopWithRetry();
     sessionIdRef.current = null;
     return res;
   }, [stopWatchersInternal]);
