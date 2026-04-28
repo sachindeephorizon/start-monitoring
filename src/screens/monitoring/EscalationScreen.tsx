@@ -67,6 +67,7 @@ const EscalationScreen: React.FC = () => {
     monitoring.clearTierSignal('user_needs_help');
     monitoring.clearTierSignal('short_deviation');
     monitoring.clearTierSignal('inactivity');
+    monitoring.clearDeviation();
 
     // Fire-and-forget the HTTP call — no need to block the user on a
     // network round-trip when the local state has already de-escalated.
