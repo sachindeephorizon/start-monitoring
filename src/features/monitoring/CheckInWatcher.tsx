@@ -27,7 +27,14 @@ import { navigationRef } from '@/navigation/navigationRef';
 const NOTIFICATION_CATEGORY = 'monitoring-checkin';
 const NOTIFICATION_DATA_TAG = 'monitoring_checkin';
 const NOTIFICATION_MISSED_TAG = 'monitoring_checkin_missed';
-const MONITORING_CHANNEL_ID = 'monitoring';
+// Channel ID is versioned because Android channels are IMMUTABLE after
+// first creation — a channel registered on a previous install with bad
+// importance (e.g. created before we bumped to MAX) keeps that bad
+// importance forever, even if setNotificationChannelAsync is called again
+// with new settings. Bumping the suffix forces a fresh channel that
+// honors our requested importance/sound. Old `monitoring` channels still
+// exist in the user's settings but no scheduled notification targets them.
+const MONITORING_CHANNEL_ID = 'monitoring_v2';
 
 // The 30-second response window the user has after the prompt fires
 // before the backend marks them as missed and escalates. Must match
@@ -61,9 +68,28 @@ async function ensureAndroidChannel() {
       vibrationPattern: [0, 250, 250, 250],
       lightColor: '#1d6fa4',
       sound: 'default',
+      enableVibrate: true,
+      enableLights: true,
+      lockscreenVisibility: Notifications.AndroidNotificationVisibility.PUBLIC,
+      bypassDnd: true,
     });
-  } catch {
-    // Channel ops are best-effort — ignore failures (e.g. on old OS versions).
+    // Read back what Android actually accepted. If the user previously
+    // disabled the channel in system settings, importance comes back as
+    // NONE (0) and no scheduled notification will display — surface that
+    // loudly so the cause is obvious in logcat.
+    const live = await Notifications.getNotificationChannelAsync(MONITORING_CHANNEL_ID);
+    if (live) {
+      console.log(
+        `[CheckInWatcher] channel '${MONITORING_CHANNEL_ID}' importance=${live.importance} sound=${live.sound ?? 'none'}`,
+      );
+      if (live.importance === Notifications.AndroidImportance.NONE) {
+        console.warn(
+          `[CheckInWatcher] channel '${MONITORING_CHANNEL_ID}' is DISABLED by the user — re-enable in Settings → Apps → DeepHorizon → Notifications → 'Safety check-ins'`,
+        );
+      }
+    }
+  } catch (e) {
+    console.warn('[CheckInWatcher] channel setup failed:', (e as Error).message);
   }
   return MONITORING_CHANNEL_ID;
 }
@@ -433,10 +459,40 @@ export const CheckInWatcher: React.FC = () => {
 
         scheduledForRef.current = due;
         console.log(
-          `[CheckInWatcher] scheduled prompt @ ${dueDate.toISOString()}, missed @ ${missedDate.toISOString()}`,
+          `[CheckInWatcher] scheduled prompt id=${promptId} @ ${dueDate.toISOString()}, missed id=${missedId} @ ${missedDate.toISOString()}`,
         );
-      } catch (e) {
-        console.warn('[CheckInWatcher] schedule failed', e);
+
+        // Verify both alarms actually landed in the OS scheduler. On Android
+        // 14+ (API 34+) `SCHEDULE_EXACT_ALARM` is REVOKED by default for
+        // most app categories — `scheduleNotificationAsync` returns an id
+        // happily but the OS quietly drops the alarm. The only way to
+        // detect this is to read the pending list back. If our IDs are
+        // missing, log a clear directive so the user knows where to look.
+        try {
+          const pending = await Notifications.getAllScheduledNotificationsAsync();
+          const ids = new Set(pending.map((n) => n.identifier));
+          const missingPrompt = !ids.has(promptId);
+          const missingMissed = !ids.has(missedId);
+          if (missingPrompt || missingMissed) {
+            console.warn(
+              `[CheckInWatcher] alarm dropped by OS (prompt=${!missingPrompt}, missed=${!missingMissed}). ` +
+                `Likely cause on Android 14+: SCHEDULE_EXACT_ALARM not granted. ` +
+                `Fix: Settings → Apps → DeepHorizon Security → Special app access → Alarms & reminders → Allow`,
+            );
+          } else {
+            console.log(
+              `[CheckInWatcher] verified ${pending.length} pending alarms present in OS`,
+            );
+          }
+        } catch (verifyErr) {
+          console.warn('[CheckInWatcher] verify pending failed:', (verifyErr as Error).message);
+        }
+      } catch (e: any) {
+        // Surface real cause — Doze / channel-blocked / quota errors all
+        // come through here with distinct messages worth seeing.
+        console.warn(
+          `[CheckInWatcher] schedule failed: ${e?.code ?? 'unknown'} ${e?.message ?? e}`,
+        );
       }
     })();
 

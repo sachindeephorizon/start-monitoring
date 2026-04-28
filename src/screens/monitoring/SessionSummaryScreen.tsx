@@ -102,10 +102,18 @@ const SessionSummaryScreen: React.FC = () => {
     1,
     summary?.stats.elapsed_minutes ?? Math.round(fallbackElapsed / 60),
   );
-  // Trust client-measured distance when the backend reports zero (common).
-  // If both are nonzero, prefer the backend (it has the full ping history).
+  // Trust the CLIENT-measured distance. It comes from haversine on every
+  // single GPS fix recorded by both the foreground watcher and the
+  // background task, persisted to SecureStore as the session runs. The
+  // backend's distance_covered_km is reconstructed from the
+  // /handling/entry timeline which is sparse — it misses rapid-fire
+  // pings, filter-rejected batches, and the Phase-3 background-persisted
+  // location_logs that may not have landed yet by the time we hit
+  // /handling/entry/:id/summary. Preferring backend whenever it was
+  // nonzero gave wrong (undercounted) totals on the trip-end screen.
+  // Only fall back to backend when the client value is missing entirely.
   const backendDistanceKm = summary?.stats.distance_covered_km ?? 0;
-  const distanceKm = backendDistanceKm > 0 ? backendDistanceKm : clientDistanceKm;
+  const distanceKm = clientDistanceKm > 0 ? clientDistanceKm : backendDistanceKm;
   const backendCheckinCount = summary?.stats.total_checkins ?? 0;
   const checkinCount = backendCheckinCount > 0 ? backendCheckinCount : clientCheckinCount;
   const backendEscalationCount = summary?.stats.total_escalations ?? 0;

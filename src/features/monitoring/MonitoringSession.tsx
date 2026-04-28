@@ -53,6 +53,9 @@ const AUTO_STOP_RADIUS_M = 250;
 // values whenever the local tier engine flips. Android's Doze mode may
 // coalesce sub-15 s intervals when the screen has been off for a while —
 // the requested interval is a floor, not a guarantee.
+// These values are a trade-off between battery life and responsiveness. The
+// foreground watcher is the user-visible part of the tier shift, so it gets the full cadence change. The background task is more of a safety net for missed pings / app kills, so it's less urgent to tighten it up in T2/T3 — we just want to make sure it can still catch an escalation if the user misses a check-in while the app is in the background.
+
 const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
   1: 60_000,  // T1 passive — 30 s, battery-sensitive
   2: 15_000,  // T2 active  — 10 s
@@ -69,6 +72,7 @@ const BG_ACCURACY_BY_TIER: Record<Tier, Location.LocationAccuracy> = {
 };
 
 // Distance threshold (m) for the haversine "moved enough to count" check.
+//n\\
 function approxDistanceM(a: { lat: number; lng: number }, b: { lat: number; lng: number }): number {
   const R = 6_371_000;
   const toRad = (d: number) => (d * Math.PI) / 180;
