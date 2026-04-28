@@ -57,7 +57,7 @@ const AUTO_STOP_RADIUS_M = 250;
 // foreground watcher is the user-visible part of the tier shift, so it gets the full cadence change. The background task is more of a safety net for missed pings / app kills, so it's less urgent to tighten it up in T2/T3 — we just want to make sure it can still catch an escalation if the user misses a check-in while the app is in the background.
 
 const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
-  1: 60_000,  // T1 passive — 30 s, battery-sensitive
+  1: 15_000,  // T1 passive — keep cadence close to backend check-in window
   2: 15_000,  // T2 active  — 10 s
   3: 5_000,   // T3 emergency — 5 s
 };
@@ -112,7 +112,7 @@ interface TierProfile {
 const TIER_PROFILES: Record<Tier, TierProfile> = {
   // T1 — Balanced keeps passive mode battery-aware while still producing
   // points accurate enough to survive the backend's strict accuracy gate.
-  1: { accuracy: Location.Accuracy.Balanced, pingMs: 60_000, distanceM: 100, stationaryCooldownMs: 120_000 },
+  1: { accuracy: Location.Accuracy.Balanced, pingMs: 15_000, distanceM: 25,  stationaryCooldownMs: 30_000  },
   2: { accuracy: Location.Accuracy.Balanced, pingMs: 15_000, distanceM: 25,  stationaryCooldownMs: 60_000  },
   3: { accuracy: Location.Accuracy.High,     pingMs: 5_000,  distanceM: 5,   stationaryCooldownMs: 15_000  },
 };
