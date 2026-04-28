@@ -83,6 +83,13 @@ const hydrateSubscriptions = useCallback(async () => {
       console.log('[Auth] Hydrated profile:', res);
 
       setProfile(res);
+      // Ensure auth.user is always populated from the profile response so
+      // MonitoringSession's userId (auth.user?.id) is never null after a
+      // successful boot — even when stored.user was absent in the persisted
+      // session (e.g. old session format or first install on a fresh device).
+      if (res?.id) {
+        setUser((prev) => (prev?.id ? prev : (res as any)));
+      }
       setAppState('ready');
       setIsAuthReady(true);
 
