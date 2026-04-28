@@ -394,8 +394,15 @@ export const CheckInWatcher: React.FC = () => {
       scheduledForRef.current = null;
     };
 
-    if (!monitoring.isActive || !monitoring.nextCheckinAt || inEscalation) {
-      // While in escalation, cancel any pending check-in notifications too.
+    if (!monitoring.isActive || !monitoring.nextCheckinAt) {
+      // Note: the `inEscalation` gate that USED to live here was removed
+      // because it silenced T2/T3 notifications entirely — the user only
+      // ever heard the T1 alert, then the missed notification, then
+      // nothing for the rest of the session. With the gate gone, every
+      // tier's deadline now triggers a real OS notification at its
+      // configured interval (T1 15min, T2 10min, T3 5min). The foreground
+      // tick still bails on `inEscalation` so it doesn't navigate over
+      // the EscalationScreen the user is already on.
       // The user is already getting alerts via the escalation pipeline; we
       // don't want a stale prompt notification firing on top.
       console.log(
@@ -540,7 +547,11 @@ export const CheckInWatcher: React.FC = () => {
       // navigation. Cancellation happens when nextCheckinAt changes (which
       // re-runs this effect) or the session ends.
     };
-  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, inEscalation, ensureNotificationPermission]);
+    // Deliberately NOT depending on `inEscalation` — the schedule effect
+    // should keep firing notifications for every tier's deadline,
+    // including during T3/escalation. The foreground-tick effect (above)
+    // still depends on it for navigation suppression.
+  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, ensureNotificationPermission]);
 
   // Watcher renders nothing — it's effect-only.
   return null;

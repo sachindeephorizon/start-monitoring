@@ -43,7 +43,7 @@ const EscalationScreen: React.FC = () => {
   // PRD §FR-ES02: cancellation returns the user to the live session.
   // Backend resets tier to 1 and computes a fresh next_checkin_at — apply
   // both locally so ActiveMonitoring's auto-prompt doesn't re-fire.
-  const handleSafe = async () => {
+  const handleSafe = () => {
     if (cancelling) return;
     setCancelling(true);
     // Rebase the next check-in BEFORE clearing the Tier 3 signals.
@@ -57,21 +57,38 @@ const EscalationScreen: React.FC = () => {
       intervalMinutes: RESET_INTERVAL_MINUTES,
       nextCheckinAt: optimisticNextCheckinAt,
     });
+    // Full reset to T1 — clear EVERY signal, not just the escalation
+    // ones. Without `short_deviation` / `inactivity` cleared too, the
+    // local tier engine still holds T2-level state and the very next
+    // GPS fix outside the corridor (or sitting still) re-bumps tier
+    // before the user has had any chance to act on the "safe" reset.
     monitoring.clearTierSignal('missed_checkin');
     monitoring.clearTierSignal('long_deviation');
     monitoring.clearTierSignal('user_needs_help');
+    monitoring.clearTierSignal('short_deviation');
+    monitoring.clearTierSignal('inactivity');
+
+    // Fire-and-forget the HTTP call — no need to block the user on a
+    // network round-trip when the local state has already de-escalated.
+    // Previously this was awaited, which made the "Stopping…" spinner
+    // hang for 1-3 s on flaky networks. The optimistic update + signal
+    // clear are the user-visible contract; the server confirms in the
+    // background.
     if (auth.user?.id) {
-      try {
-        const r = await escalationCancel(auth.user.id);
-        monitoring.applyCheckinUpdate({
-          tier: r.tier_reset_to ?? 1,
-          intervalMinutes: RESET_INTERVAL_MINUTES,
-          nextCheckinAt: optimisticNextCheckinAt,
+      escalationCancel(auth.user.id)
+        .then((r) => {
+          monitoring.applyCheckinUpdate({
+            tier: r.tier_reset_to ?? 1,
+            intervalMinutes: RESET_INTERVAL_MINUTES,
+            nextCheckinAt: optimisticNextCheckinAt,
+          });
+        })
+        .catch(() => {
+          // best-effort — local state already says safe; backend will
+          // catch up via the next /ping if this request was lost.
         });
-      } catch {
-        // best-effort — UI returns to monitoring regardless
-      }
     }
+
     setCancelling(false);
     if (navigation.canGoBack()) {
       navigation.goBack();

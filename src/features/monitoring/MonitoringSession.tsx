@@ -61,7 +61,14 @@ const BG_INTERVAL_BY_TIER: Record<Tier, number> = {
   2: 15_000,  // T2 active  — 10 s
   3: 5_000,   // T3 emergency — 5 s
 };
-const BG_DISTANCE_M = 5;     // tighter than foreground; OS dedupes anyway
+// BG_DISTANCE_M is 0 (was 5) so the OS fires every BG callback purely on
+// timeInterval, not "moved 5 m AND elapsed 60 s". When the phone is
+// stationary (screen off, in pocket, sitting at a desk), a non-zero
+// distance gate gives the OS an excuse to skip time-based fires entirely
+// during Doze — leading to "ping_gap" warnings followed by silence.
+// Distance=0 is more battery-hungry but is the only way to get reliable
+// time-based delivery when the phone isn't moving.
+const BG_DISTANCE_M = 0;
 const BG_ACCURACY_BY_TIER: Record<Tier, Location.LocationAccuracy> = {
   // Use Balanced even in T1. Lowest produces cell-tower fixes that the
   // backend intentionally rejects (>35 m accuracy), which makes passive
@@ -119,9 +126,7 @@ const TIER_PROFILES: Record<Tier, TierProfile> = {
 
 // Check-in interval per tier, in minutes.
 // MUST stay in sync with the backend's TIER_CONFIG in
-// rewp2/src/routes/checkin.ts. Used locally to re-baseline `nextCheckinAt`
-// the moment the tier engine flips, so the user doesn't keep seeing a stale
-// "in 25 min" countdown after the system already escalated to T3.
+// rewp2/src/routes/checkin.ts.
 const TIER_INTERVAL_MIN: Record<Tier, number> = {
   1: 15,
   2: 10,
@@ -389,13 +394,31 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         accuracy: BG_ACCURACY_BY_TIER[tier],
         timeInterval: BG_INTERVAL_BY_TIER[tier],
         distanceInterval: BG_DISTANCE_M,
+        // Required on Android 10+ to mark this as a foreground-service
+        // GPS task — gives the OS a stronger reason to keep us alive
+        // during Doze.
         showsBackgroundLocationIndicator: true,
         foregroundService: {
-          notificationTitle: `Deep Horizon · Monitoring`,
-          notificationBody: `Your trip is being monitored in the background. Tap to return to the app.`,
+          notificationTitle: `Deep Horizon · Safety monitoring active`,
+          notificationBody:
+            tier === 3
+              ? 'EMERGENCY tier — full GPS at 5 s cadence.'
+              : tier === 2
+                ? 'Active tier — GPS at 15 s cadence.'
+                : 'Tracking your location every minute.',
           notificationColor: '#1d6fa4',
+          // Keep the foreground-service alive even if the JS context dies
+          // (low-memory kill, swipe from Recents). expo-location defaults
+          // this to false on some SDK versions — making it explicit so the
+          // service survives every kind of teardown except an explicit
+          // stopLocationUpdatesAsync.
+          killServiceOnDestroy: false,
         },
         pausesUpdatesAutomatically: false,
+        // Mark as fitness/automotive activity — Android's location
+        // power manager treats this as "user is actively in motion",
+        // which tilts Doze decisions our way during screen-off.
+        activityType: Location.ActivityType.AutomotiveNavigation,
       });
       console.log(
         `[monitoring] bg task running at T${tier}: ${BG_INTERVAL_BY_TIER[tier] / 1000}s`,
@@ -792,9 +815,14 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   const endSession = useCallback(async (): Promise<StopResponse | null> => {
     stopWatchersInternal();
     const uid = userIdRef.current;
-    // Wipe everything the CheckInWatcher reads — without this, the deadline
-    // stays in state and the watcher will navigate to CheckInPrompt (or
-    // re-fire the queued local notification) after the session has ended.
+
+    // ── PHASE 1 (synchronous, instant) ──────────────────────────────────
+    // Everything the user perceives as "session ended": clear in-memory
+    // state, wipe SecureStore gates so the BG task no-ops on its next
+    // delivery, and return immediately. The BG_KEYS.active flag set to
+    // 'false' is the authoritative gate — even if the OS-level task
+    // lingers for a few seconds, it sees the flag on entry and silently
+    // bails without pinging.
     setState((s) => ({
       ...s,
       isActive: false,
@@ -809,9 +837,9 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     }));
     lastCheckinAtRef.current = null;
 
-    // Tear down the OS-level background task. CRITICAL: also flip the
-    // SecureStore "active" gate to false BEFORE stopping the task, so any
-    // in-flight delivery silently no-ops instead of pinging.
+    // Fire-and-forget all the SecureStore writes — they're independent
+    // and order doesn't matter. Awaiting them serially used to add ~50ms
+    // per write × 8 writes = ~400ms of pure UI freeze for no benefit.
     SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.startedAt).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.tripType).catch(() => {});
@@ -820,36 +848,51 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
     SecureStore.deleteItemAsync(BG_KEYS.destinationLat).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationLng).catch(() => {});
     SecureStore.deleteItemAsync(BG_KEYS.destinationName).catch(() => {});
-    try {
-      const started = await Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK);
-      if (started) {
-        await Location.stopLocationUpdatesAsync(MONITORING_BG_TASK);
-      }
-    } catch {
-      // best-effort
-    }
 
-    if (!uid) return null;
-    // Tear down both layers: location-service session + /handling lifecycle.
-    entryEnd(uid).catch(() => {});
-    // Stop endpoint can fail transiently right when radios are changing
-    // state during app background/foreground transitions. Retry quickly so
-    // the user disappears from "live users" without requiring manual retry.
-    const stopWithRetry = async (): Promise<StopResponse | null> => {
+    // ── PHASE 2 (deferred, no await) ────────────────────────────────────
+    // Native task teardown + backend HTTP calls run in the background.
+    // The UI has already navigated to the summary screen; these settle
+    // over the next 1-3 seconds without the user waiting on them.
+    void (async () => {
+      try {
+        const started = await Location.hasStartedLocationUpdatesAsync(MONITORING_BG_TASK);
+        if (started) {
+          await Location.stopLocationUpdatesAsync(MONITORING_BG_TASK);
+        }
+      } catch {
+        // best-effort — the BG_KEYS.active gate already neutralized any
+        // pings that might fire while the task tears down.
+      }
+
+      if (!uid) return;
+      // Tear down both layers: location-service session + /handling
+      // lifecycle. entryEnd is best-effort. stopTracking gets a small
+      // retry loop because the /stop call also flips the `stopped:`
+      // flag that /users/active checks — without that flag the user
+      // keeps appearing as live on dashboards even though they ended.
+      entryEnd(uid).catch(() => {});
       for (let attempt = 1; attempt <= 3; attempt += 1) {
         try {
-          return await stopTracking(uid);
+          await stopTracking(uid);
+          break;
         } catch {
           if (attempt < 3) {
             await new Promise((r) => setTimeout(r, attempt * 300));
           }
         }
       }
-      return null;
+      sessionIdRef.current = null;
+    })();
+
+    // Return synthetic StopResponse so callers can navigate to the summary
+    // screen immediately. Real backend response lands in the background;
+    // the summary screen reads its data from local refs (distance, counts)
+    // and falls back via /handling/entry/:id/summary on its own load.
+    return {
+      ok: true,
+      pending: true,
+      userId: uid ?? undefined,
     };
-    const res = await stopWithRetry();
-    sessionIdRef.current = null;
-    return res;
   }, [stopWatchersInternal]);
 
   useEffect(() => {
