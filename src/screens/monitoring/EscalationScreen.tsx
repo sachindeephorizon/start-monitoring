@@ -4,12 +4,18 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialIcons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Notifications from 'expo-notifications';
 import { styles } from './EscalationScreen.styles';
 import { useAuth } from '@/core/auth';
 import { escalationCancel } from '@/api/monitoring';
 import { useMonitoringSession } from '@/features/monitoring/MonitoringSession';
+import { cancelAllCheckInNotificationsByTag } from '@/features/monitoring/CheckInWatcher';
 
-const RESET_INTERVAL_MINUTES = 3;
+// "I'm Safe" anywhere = full reset to fresh Tier 1 with the standard
+// 15-minute passive-monitoring interval. Matches the product spec:
+// every safe ack clears all signals, drops to T1, and starts a fresh
+// 15-min countdown — no quick-follow-up check.
+const RESET_TIER1_INTERVAL_MIN = 15;
 
 type StepStatus = 'done' | 'active' | 'pending';
 
@@ -40,28 +46,40 @@ const EscalationScreen: React.FC = () => {
   const monitoring = useMonitoringSession();
   const [cancelling, setCancelling] = useState(false);
 
-  // PRD §FR-ES02: cancellation returns the user to the live session.
-  // Backend resets tier to 1 and computes a fresh next_checkin_at — apply
-  // both locally so ActiveMonitoring's auto-prompt doesn't re-fire.
+  // PRD §FR-ES02: cancellation returns the user to the live session at
+  // a fresh Tier 1 baseline — 15-min countdown, all signals cleared, all
+  // pending/displayed check-in notifications wiped.
   const handleSafe = () => {
     if (cancelling) return;
     setCancelling(true);
-    // Rebase the next check-in BEFORE clearing the Tier 3 signals.
-    // Otherwise the tier engine drops to T1 using the stale baseline and
-    // briefly computes "due now".
-    const optimisticNextCheckinAt = new Date(
-      Date.now() + RESET_INTERVAL_MINUTES * 60_000,
+
+    // ── 1. Wipe all check-in notifications immediately ─────────────────
+    // Cancel scheduled alarms (so the old "missed" doesn't fire 30s after
+    // the deadline that's already in the past) AND dismiss anything
+    // already in the tray (so tapping a stale "missed" can't push a fresh
+    // missed_checkin signal and yank the user back to escalation).
+    cancelAllCheckInNotificationsByTag().catch(() => {});
+    Notifications.dismissAllNotificationsAsync().catch(() => {});
+
+    // ── 2. Optimistic local reset to fresh T1 + 15 min ─────────────────
+    // applyCheckinUpdate re-anchors lastCheckinAt to "now", arms the
+    // safe-ack grace window, and queues the new tier/interval/deadline
+    // into state. Doing this BEFORE clearing signals means the tier
+    // engine's onTierChange callback recomputes the deadline from the
+    // freshly-anchored baseline, not the stale T3 one.
+    const freshDueAt = new Date(
+      Date.now() + RESET_TIER1_INTERVAL_MIN * 60_000,
     ).toISOString();
     monitoring.applyCheckinUpdate({
       tier: 1,
-      intervalMinutes: RESET_INTERVAL_MINUTES,
-      nextCheckinAt: optimisticNextCheckinAt,
+      intervalMinutes: RESET_TIER1_INTERVAL_MIN,
+      nextCheckinAt: freshDueAt,
     });
-    // Full reset to T1 — clear EVERY signal, not just the escalation
-    // ones. Without `short_deviation` / `inactivity` cleared too, the
-    // local tier engine still holds T2-level state and the very next
-    // GPS fix outside the corridor (or sitting still) re-bumps tier
-    // before the user has had any chance to act on the "safe" reset.
+
+    // ── 3. Drop every engine signal so tier truly returns to T1 ────────
+    // Without clearing short_deviation / inactivity too, the engine
+    // holds T2-level state and the next GPS fix off-corridor (or sitting
+    // still) re-bumps the tier within seconds.
     monitoring.clearTierSignal('missed_checkin');
     monitoring.clearTierSignal('long_deviation');
     monitoring.clearTierSignal('user_needs_help');
@@ -69,25 +87,15 @@ const EscalationScreen: React.FC = () => {
     monitoring.clearTierSignal('inactivity');
     monitoring.clearDeviation();
 
-    // Fire-and-forget the HTTP call — no need to block the user on a
-    // network round-trip when the local state has already de-escalated.
-    // Previously this was awaited, which made the "Stopping…" spinner
-    // hang for 1-3 s on flaky networks. The optimistic update + signal
-    // clear are the user-visible contract; the server confirms in the
-    // background.
+    // ── 4. Backend ack — fire-and-forget ───────────────────────────────
+    // The PUT clears Redis devstreak / inactwin / deviation keys server-
+    // side and resets the checkin store to T1 + 15 min. We don't await
+    // and we don't reapply the response: the local state above already
+    // matches what the backend will compute, and the safe-ack grace
+    // window in MonitoringSession suppresses any stale ping signals
+    // until the server catches up.
     if (auth.user?.id) {
-      escalationCancel(auth.user.id)
-        .then((r) => {
-          monitoring.applyCheckinUpdate({
-            tier: r.tier_reset_to ?? 1,
-            intervalMinutes: RESET_INTERVAL_MINUTES,
-            nextCheckinAt: optimisticNextCheckinAt,
-          });
-        })
-        .catch(() => {
-          // best-effort — local state already says safe; backend will
-          // catch up via the next /ping if this request was lost.
-        });
+      escalationCancel(auth.user.id).catch(() => {});
     }
 
     setCancelling(false);

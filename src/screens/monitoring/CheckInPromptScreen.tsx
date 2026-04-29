@@ -4,6 +4,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { MaterialCommunityIcons, MaterialIcons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as Notifications from 'expo-notifications';
 import { styles } from './CheckInPromptScreen.styles';
 import { useAuth } from '@/core/auth';
 import { useMonitoringSession } from '@/features/monitoring/MonitoringSession';
@@ -16,6 +17,9 @@ import {
 } from '@/api/monitoring';
 
 const RESPONSE_WINDOW_SECONDS = 30;
+// Per spec: every "I'm Safe" — wherever it's tapped — resets to fresh
+// Tier 1 with the standard 15-minute passive interval.
+const RESET_TIER1_INTERVAL_MIN = 15;
 
 type CheckInPromptRouteParams = {
   dueAt?: string;
@@ -39,9 +43,16 @@ const CheckInPromptScreen: React.FC = () => {
   const dueAtIso = params.dueAt ?? monitoring.nextCheckinAt ?? null;
   const dueAtMs = dueAtIso ? new Date(dueAtIso).getTime() : Date.now();
   const hasValidDueAt = Number.isFinite(dueAtMs);
-  const deadlineMs = hasValidDueAt
-    ? dueAtMs + RESPONSE_WINDOW_SECONDS * 1000
-    : Date.now() + RESPONSE_WINDOW_SECONDS * 1000;
+  // Per spec: every check-in prompt gets a FRESH 30 s window when the
+  // screen opens. If the deadline was reached long ago (app backgrounded
+  // through the response window, BG task pushed missed → tier shift fired
+  // late), don't punish the user with a "0 seconds left, you missed it"
+  // — give them a real chance to confirm safe before escalation.
+  const promptOpenedAtMs = useRef<number>(Date.now()).current;
+  const deadlineMs = Math.max(
+    hasValidDueAt ? dueAtMs + RESPONSE_WINDOW_SECONDS * 1000 : 0,
+    promptOpenedAtMs + RESPONSE_WINDOW_SECONDS * 1000,
+  );
 
   const effectiveStartedAt = params.startedAt ?? monitoring.startedAt ?? null;
   const elapsedMinutes = effectiveStartedAt
@@ -106,31 +117,43 @@ const CheckInPromptScreen: React.FC = () => {
     navigation.replace('Escalation');
   }, [navigation, secondsLeft, userId, monitoring]);
 
-  const handleSafe = async () => {
+  const handleSafe = () => {
     if (submitting) return;
     setSubmitting(true);
     if (intervalRef.current) clearInterval(intervalRef.current);
-    // Pre-emptively cancel the pending missed-check-in alarm BEFORE the
-    // network call. Without this, a slow /checkin/respond call lets the
-    // 30s missed alarm fire in the gap between tap and applyCheckinUpdate
-    // → user sees a false "Check-in missed" notification seconds after
-    // they already marked themselves safe.
+
+    // Wipe every check-in notification — scheduled (so the 30s "missed"
+    // alarm can't fire in the gap between tap and state update) AND
+    // already-displayed (so the user can't tap a stale "missed" from
+    // the tray and get yanked into escalation after confirming safe).
     cancelAllCheckInNotificationsByTag().catch(() => {});
+    Notifications.dismissAllNotificationsAsync().catch(() => {});
+
+    // Optimistic local reset to fresh T1 + 15 min — same contract as
+    // EscalationScreen.handleSafe. applyCheckinUpdate also clears
+    // lastDeviation / inactivityFlag and arms the safe-ack grace
+    // window so the next ping doesn't re-push stale signals.
+    monitoring.applyCheckinUpdate({
+      tier: 1,
+      intervalMinutes: RESET_TIER1_INTERVAL_MIN,
+      nextCheckinAt: new Date(
+        Date.now() + RESET_TIER1_INTERVAL_MIN * 60_000,
+      ).toISOString(),
+    });
+    monitoring.clearTierSignal('missed_checkin');
+    monitoring.clearTierSignal('long_deviation');
+    monitoring.clearTierSignal('user_needs_help');
+    monitoring.clearTierSignal('short_deviation');
+    monitoring.clearTierSignal('inactivity');
+    monitoring.clearDeviation();
+
+    // Backend ack — fire-and-forget. Local state already reflects the
+    // safe state; the safe-ack grace window suppresses any racy stale
+    // ping signals until the server-side reset lands.
     if (userId) {
-      try {
-        const r = await checkinRespond(userId, true);
-        // Apply the new tier + next_checkin_at IMMEDIATELY so the auto-prompt
-        // dedup ref sees a fresh future deadline (otherwise it would re-fire
-        // on the next tick because the old deadline is still in the past).
-        monitoring.applyCheckinUpdate({
-          tier: r.tier,
-          intervalMinutes: r.interval_minutes,
-          nextCheckinAt: r.next_checkin_at,
-        });
-      } catch {
-        // best-effort, UI returns to live session regardless
-      }
+      checkinRespond(userId, true).catch(() => {});
     }
+
     setSubmitting(false);
     navigation.goBack();
   };

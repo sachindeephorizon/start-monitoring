@@ -298,25 +298,13 @@ export const CheckInWatcher: React.FC = () => {
     };
   }, [ensureNotificationPermission, monitoring.pushTierSignal]);
 
-  // While the engine is in the escalation flow (`missed_checkin`,
-  // `long_deviation`, or `user_needs_help` signal active), suppress ALL
-  // check-in prompting. Otherwise the short T3 interval causes a
-  // notification storm: every T3-cycle's `nextCheckinAt` lands in the past
-  // (because lastCheckin was never updated), the watcher fires a fresh
-  // prompt + missed, the backend re-escalates, and we loop. The escalation
-  // pipeline is already alerting the user — additional check-in prompts
-  // on top are noise.
-  // Resumes the moment EscalationScreen's "I'm Safe" clears the signals.
-  const dbg = monitoring.getEngineDebug();
-  const inEscalation =
-    !!dbg &&
-    (dbg.activeSignals.includes('missed_checkin') ||
-      dbg.activeSignals.includes('long_deviation') ||
-      dbg.activeSignals.includes('user_needs_help'));
-
   // ── Foreground tick: prompt when due, on any screen ────────────────────
+  // Per product spec, the ONLY path to EscalationScreen is via the prompt's
+  // 30-second timer expiring. We never short-circuit straight to escalation
+  // even if the deadline is hours past — show the prompt first, give the
+  // user a fresh 30 s, then escalate on no-response.
   useEffect(() => {
-    if (!monitoring.isActive || inEscalation) {
+    if (!monitoring.isActive) {
       if (tickRef.current) {
         clearInterval(tickRef.current);
         tickRef.current = null;
@@ -333,37 +321,16 @@ export const CheckInWatcher: React.FC = () => {
       const now = Date.now();
       if (now < dueMs) return;
 
-      // Don't route over active escalation. This can happen when a missed
-      // notification tap and foreground resume race each other.
+      // Don't route over the screens that are already handling this:
+      //   Escalation — the prompt already expired earlier; user is acting on it
+      //   CheckInPrompt — already showing the 30s timer
       let current: string | undefined;
       if (navigationRef.isReady()) {
         current = navigationRef.getCurrentRoute()?.name as string | undefined;
-        if (current === 'Escalation') {
+        if (current === 'Escalation' || current === 'CheckInPrompt') {
           lastPromptedRef.current = due;
           return;
         }
-      }
-
-      // If the 30s response window is already over, skip CheckInPrompt and
-      // enter escalation directly to avoid stacking prompt→escalation routes.
-      if (now >= dueMs + RESPONSE_WINDOW_MS) {
-        lastPromptedRef.current = due;
-        monitoring.pushTierSignal('missed_checkin');
-        if (appStateRef.current === 'active') {
-          showForegroundBannerNow({
-            title: 'Deep Horizon · ALERT',
-            body: 'Check-in missed. Emergency mode activated.',
-            data: { type: NOTIFICATION_MISSED_TAG, dueAt: due },
-          }).catch(() => {});
-        }
-        navigateToEscalation();
-        return;
-      }
-
-      // Don't navigate over the prompt if it's already on screen.
-      if (current === 'CheckInPrompt') {
-        lastPromptedRef.current = due;
-        return;
       }
 
       lastPromptedRef.current = due;
@@ -388,7 +355,7 @@ export const CheckInWatcher: React.FC = () => {
       if (tickRef.current) clearInterval(tickRef.current);
       tickRef.current = null;
     };
-  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, inEscalation]);
+  }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt]);
 
   // ── Background notification: schedule at nextCheckinAt ─────────────────
   useEffect(() => {
@@ -413,19 +380,9 @@ export const CheckInWatcher: React.FC = () => {
     };
 
     if (!monitoring.isActive || !monitoring.nextCheckinAt) {
-      // Note: the `inEscalation` gate that USED to live here was removed
-      // because it silenced T2/T3 notifications entirely — the user only
-      // ever heard the T1 alert, then the missed notification, then
-      // nothing for the rest of the session. With the gate gone, every
-      // tier's deadline now triggers a real OS notification at its
-      // configured interval (T1 15min, T2 10min, T3 5min). The foreground
-      // tick still bails on `inEscalation` so it doesn't navigate over
-      // the EscalationScreen the user is already on.
-      // The user is already getting alerts via the escalation pipeline; we
-      // don't want a stale prompt notification firing on top.
       console.log(
         `[CheckInWatcher] schedule bail (isActive=${monitoring.isActive}, ` +
-          `nextCheckinAt=${monitoring.nextCheckinAt ?? 'null'}, inEscalation=${inEscalation})`,
+          `nextCheckinAt=${monitoring.nextCheckinAt ?? 'null'})`,
       );
       cancelPending();
       return;
@@ -565,28 +522,18 @@ export const CheckInWatcher: React.FC = () => {
       // navigation. Cancellation happens when nextCheckinAt changes (which
       // re-runs this effect) or the session ends.
     };
-    // Deliberately NOT depending on `inEscalation` — the schedule effect
-    // should keep firing notifications for every tier's deadline,
-    // including during T3/escalation. The foreground-tick effect (above)
-    // still depends on it for navigation suppression.
   }, [monitoring.isActive, monitoring.nextCheckinAt, monitoring.intervalMinutes, monitoring.startedAt, ensureNotificationPermission]);
 
-  // ── Navigate to EscalationScreen when critical signals become active ──────
-  // The foreground tick handles navigation when it detects a passed deadline,
-  // but it's stopped while inEscalation is true. This effect covers the gap:
-  // when missed_checkin / long_deviation / user_needs_help is pushed while
-  // the screen is off (BG task → SecureStore flag → MonitoringSession foreground
-  // resume handler pushes signal), nobody else triggers navigation — so we do it
-  // here as soon as the render sees the new inEscalation state.
-  useEffect(() => {
-    if (!monitoring.isActive || !inEscalation) return;
-    // Small delay lets the navigation stack settle after the JS bundle wakes.
-    const t = setTimeout(() => {
-      navigateToEscalation().catch(() => {});
-    }, 250);
-    return () => clearTimeout(t);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [monitoring.isActive, inEscalation]);
+  // NOTE: a previous version of this file had an effect here that auto-
+  // navigated to EscalationScreen the moment the tier engine acquired a
+  // missed_checkin / long_deviation / user_needs_help signal. That short-
+  // circuit was the source of "escalation appears without a check-in
+  // prompt first". Per spec, the ONLY path to EscalationScreen is via
+  // CheckInPromptScreen's 30-second timer expiring. When backend-detected
+  // missed flips the engine to T3, the tier-change recomputes
+  // nextCheckinAt to "now" (max(now, lastCheckin+5min)), the schedule/tick
+  // effects above pick that up, and the user sees the prompt with a
+  // fresh 30 s window — same as every other deadline.
 
   // Watcher renders nothing — it's effect-only.
   return null;

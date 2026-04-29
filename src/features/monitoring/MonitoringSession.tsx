@@ -93,6 +93,12 @@ function approxDistanceM(a: { lat: number; lng: number }, b: { lat: number; lng:
 
 const REMAINING_POLL_MS = 10_000;
 const MOVING_SPEED_MPS = 0.6;
+// Window after a user-initiated "I'm Safe" / check-in response during which
+// the ping handler ignores backend-driven escalation signals. Long enough
+// to swallow 1–2 ping cycles (so escalationCancel / checkinRespond have
+// time to land + the backend's per-ping snapshot to refresh), short enough
+// that a *new* genuine escalation still surfaces promptly.
+const SAFE_ACK_GRACE_MS = 30_000;
 
 // Normalize React Native's AppState ('active'/'background'/'inactive') to the
 // 'foreground'/'background' vocabulary the background task uses. Keeps the
@@ -313,6 +319,20 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   // we count locally and pass them through.
   const checkinCountRef = useRef<number>(0);
   const escalationCountRef = useRef<number>(0);
+  // Mirrors state.hasFirstPing into a ref so the AppState gate inside
+  // sendPingFromLatest can read it without depending on state in the
+  // useCallback's deps. Flips to true only after a SUCCESSFUL ping
+  // response, so a failed first-attempt doesn't lock us out of retrying
+  // during a brief AppState='inactive' window.
+  const hasFirstPingRef = useRef<boolean>(false);
+  // ms-epoch until which we suppress backend-driven escalation signals
+  // after the user explicitly confirmed "I'm Safe". escalationCancel /
+  // checkinRespond are fire-and-forget; without this gate the very next
+  // ping (5–15 s later) re-reads stale backend state — old tier=3,
+  // missedCheckin still true, devstreak/inactwin not yet cleared — and
+  // immediately re-pushes missed_checkin / deviation signals, slamming
+  // the user back to the EscalationScreen they just dismissed.
+  const safeAckedUntilRef = useRef<number>(0);
 
   useEffect(() => {
     userIdRef.current = userId;
@@ -450,7 +470,18 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   const sendPingFromLatestRef = useRef<(() => Promise<void>) | null>(null);
 
   const sendPingFromLatest = useCallback(async () => {
-    if (AppState.currentState !== 'active') {
+    // Skip foreground pings while app is backgrounded — let the BG task
+    // own that ping cadence so dashboard `source` labels stay honest
+    // (every BG ping says `background_task`, every FG ping says
+    // `expo-location`). EXCEPT: never block the FIRST ping. AppState can
+    // briefly report 'inactive' during screen transitions / app launch
+    // on Android — if the seed fix resolves during that window we'd
+    // silently drop it, and the user stares at "Connecting…" for a
+    // full watcher cadence (15 s on T1) before anything else happens.
+    if (
+      AppState.currentState !== 'active' &&
+      hasFirstPingRef.current
+    ) {
       return;
     }
     const loc = latestLocationRef.current;
@@ -555,10 +586,17 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         pingCountFiltered: wasFiltered ? s.pingCountFiltered + 1 : s.pingCountFiltered,
       }));
 
+      // Within the post-"I'm Safe" grace window, ignore backend escalation
+      // signals. The escalationCancel / checkinRespond writes that the
+      // backend needs to process are fire-and-forget; without this gate
+      // the next ping reads stale tier/missed/deviation state and
+      // immediately re-pushes the very signals the user just cleared.
+      const inSafeAckGrace = Date.now() < safeAckedUntilRef.current;
+
       // Bridge backend signals into the local tier engine. The engine is
       // the single source of tier truth for the client; the backend still
       // independently maintains its own checkin store for SOC visibility.
-      if (tier) {
+      if (tier && !inSafeAckGrace) {
         if (res.deviationAlert) {
           const sev = (res.deviationAlert as any).severity as 'short' | 'long' | undefined;
           if (sev === 'long') tier.pushSignal('long_deviation');
@@ -575,6 +613,8 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           console.log('[ping] backend reports missed check-in — escalating');
           tier.pushSignal('missed_checkin');
         }
+      } else if (inSafeAckGrace && (res.missedCheckin || res.deviationAlert || res.inactivityFlag)) {
+        console.log('[ping] suppressing backend escalation signals during safe-ack grace');
       }
 
       // Server tier is informational only — the local engine is the single
@@ -590,19 +630,29 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
       // the user is still off-corridor. The new `deviationFlag` boolean
       // tells us "currently deviated" regardless of threshold — keep the
       // last alert visible while flagged, clear only when flag drops.
+      hasFirstPingRef.current = true;
       setState((s) => ({
         ...s,
         lastLocation: loc,
-        lastDeviation: res.deviationFlag
-          ? (res.deviationAlert ?? s.lastDeviation)
-          : null,
+        // During safe-ack grace, hold the cleared deviation/inactivity
+        // state — backend's per-ping flags lag behind escalationCancel's
+        // Redis cleanup by 1–2 pings, and overwriting here would un-clear
+        // exactly what the user just dismissed.
+        lastDeviation: inSafeAckGrace
+          ? null
+          : res.deviationFlag
+            ? (res.deviationAlert ?? s.lastDeviation)
+            : null,
         arrivalDetected: !!res.arrivalDetected || s.arrivalDetected,
-        inactivityFlag: !!res.inactivityFlag,
+        inactivityFlag: inSafeAckGrace ? false : !!res.inactivityFlag,
         pingError: null,
         hasFirstPing: true,
       }));
       // Keep server-side tier in sync as a safety net (rare disagreement).
-      if (serverTier && serverTier > tierRef.current) {
+      // Skip during safe-ack grace — the backend hasn't processed our
+      // de-escalation yet, so its tier is the stale "before safe" value
+      // and mirroring it would immediately re-escalate.
+      if (!inSafeAckGrace && serverTier && serverTier > tierRef.current) {
         tier?.pushSignal(
           serverTier === 3 ? 'missed_checkin' : 'short_deviation',
         );
@@ -664,6 +714,7 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
 
       sequenceRef.current = 0;
       lastSentRef.current = 0;
+      hasFirstPingRef.current = false;
       sessionIdRef.current = `sm_${Date.now()}`;
       tierRef.current = DEFAULT_TIER;
       destinationRef.current = null;
@@ -742,19 +793,40 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
           })
           .catch(() => {});
 
-        // Seed location — best-effort. If it succeeds before the watcher
-        // produces its first fix, fire an immediate ping so /users/active
-        // populates within a couple of seconds.
+        // Seed location — two parallel paths for speed.
+        //
+        // Path 1: getLastKnownPositionAsync — returns the OS cache nearly
+        //   instantly. Good enough to flip the UI out of "Connecting…"
+        //   and fire the very first ping within a second of session start.
+        //
+        // Path 2: getCurrentPositionAsync({ Balanced }) — same as before,
+        //   produces a fresh fix in 1-30 s depending on GPS state.
+        //
+        // Each path only overwrites latestLocationRef if its fix is
+        // NEWER than what's already there (by timestamp), so a fast
+        // Path-2 fresh fix won't get clobbered by Path-1's cached value
+        // arriving moments later. Accuracy unchanged — still Balanced.
+        const adoptFix = (fix: Location.LocationObject, label: string) => {
+          const prev = latestLocationRef.current;
+          if (!prev || (fix.timestamp ?? 0) > (prev.timestamp ?? 0)) {
+            latestLocationRef.current = fix;
+            console.log(
+              `[monitoring] ${label} lat=${fix.coords.latitude.toFixed(5)} lng=${fix.coords.longitude.toFixed(5)}`,
+            );
+            sendPingFromLatestRef.current?.().catch(() => {});
+          }
+        };
+
+        Location.getLastKnownPositionAsync({ maxAge: 5 * 60_000 })
+          .then((cached) => {
+            if (cached) adoptFix(cached, 'seeded from last-known');
+          })
+          .catch(() => {});
+
         Location.getCurrentPositionAsync({
           accuracy: Location.Accuracy.Balanced,
         })
-          .then((seed) => {
-            latestLocationRef.current = seed;
-            console.log(
-              `[monitoring] seeded GPS fix lat=${seed.coords.latitude.toFixed(5)} lng=${seed.coords.longitude.toFixed(5)}`,
-            );
-            sendPingFromLatestRef.current?.().catch(() => {});
-          })
+          .then((fresh) => adoptFix(fresh, 'seeded fresh GPS fix'))
           .catch((e) =>
             console.warn('[monitoring] could not get initial GPS fix', e),
           );
@@ -1015,6 +1087,14 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
   }, []);
 
   const clearDeviation = useCallback(() => {
+    // Arm the grace window so the very next ping doesn't reinstate the
+    // deviation/inactivity flags the user just acknowledged away.
+    safeAckedUntilRef.current = Date.now() + SAFE_ACK_GRACE_MS;
+    // Drop the BG missed flag and reset the tier engine (positions +
+    // stationary anchor + signals). See applyCheckinUpdate above for
+    // why these matter — same race fixes apply on this path too.
+    SecureStore.deleteItemAsync(BG_KEYS.missedCheckin).catch(() => {});
+    tierServiceRef.current?.reset();
     setState((s) => ({ ...s, lastDeviation: null, inactivityFlag: false }));
   }, []);
 
@@ -1055,7 +1135,28 @@ export const MonitoringSessionProvider: React.FC<{ children: React.ReactNode }> 
         const now = Date.now();
         lastCheckinAtRef.current = now;
         checkinCountRef.current += 1;
+        // Arm the safe-ack grace window — see safeAckedUntilRef declaration.
+        // Suppresses backend escalation signals + tier mirroring on the
+        // next 1–2 pings so a fire-and-forget escalationCancel /
+        // checkinRespond call has time to land server-side.
+        safeAckedUntilRef.current = now + SAFE_ACK_GRACE_MS;
         SecureStore.setItemAsync(BG_KEYS.lastCheckinAt, String(now)).catch(() => {});
+      }
+
+      // A safe ack — tier=1 + a fresh nextCheckinAt — is a FULL reset.
+      // Wipe everything that could re-flag the user within seconds:
+      //   • BG_KEYS.missedCheckin: SecureStore flag set by the background
+      //     task on a backend missedCheckin response. Without clearing,
+      //     the next AppState foreground transition re-pushes the signal
+      //     and yanks the engine back to T3.
+      //   • TierSignalService positions[] + stationary anchor: a user
+      //     who's been stationary for 11 min still has an 11-min-old
+      //     anchor; clearSignal('inactivity') alone doesn't drop the
+      //     anchor, so the next position report immediately re-fires
+      //     inactivity. reset() drops both.
+      if (update.tier === 1 && update.nextCheckinAt) {
+        SecureStore.deleteItemAsync(BG_KEYS.missedCheckin).catch(() => {});
+        tierServiceRef.current?.reset();
       }
       setState((s) => ({
         ...s,
