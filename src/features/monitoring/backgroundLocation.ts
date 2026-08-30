@@ -120,6 +120,9 @@ interface NativeLocation {
   timestamp: number;
 }
 
+// Minimum gap between sequential pings in a batched delivery to avoid 429s.
+const PING_GAP_MS = 850;
+
 TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
   if (error) {
     console.warn('[bg-task] location error:', error.message);
@@ -151,7 +154,8 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
       (a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0),
     );
 
-    for (const loc of sorted) {
+    for (let i = 0; i < sorted.length; i++) {
+      const loc = sorted[i];
       sequence += 1;
       const speed = loc.coords.speed ?? 0;
       const moving = speed > 0.6;
@@ -176,11 +180,18 @@ TaskManager.defineTask(MONITORING_BG_TASK, async ({ data, error }) => {
         sessionId: sessionId ?? undefined,
       };
       try {
-        await pingLocation(userId, payload);
+        const res = await pingLocation(userId, payload);
+        if ((res as any)?.stopped) {
+          await SecureStore.setItemAsync(BG_KEYS.active, 'false').catch(() => {});
+          break;
+        }
       } catch (e: any) {
         console.warn(
           `[bg-task] ping seq=${sequence} failed: ${e?.message ?? 'unknown'}`,
         );
+      }
+      if (i < sorted.length - 1) {
+        await new Promise((r) => setTimeout(r, PING_GAP_MS));
       }
     }
 
