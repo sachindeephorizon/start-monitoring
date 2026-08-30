@@ -59,6 +59,8 @@ export interface PingResponse {
   reason?: string;
   forceRefresh?: boolean;
   deviationAlert?: DeviationAlert | null;
+  deviationFlag?: boolean;
+  speedKmh?: number | null;
   arrivalDetected?: boolean;
   inactivityFlag?: boolean;
   tier?: Tier | null;
@@ -72,6 +74,8 @@ export interface PingResponse {
    * should mirror locally + navigate to EscalationScreen.
    */
   missedCheckin?: boolean;
+  /** True when the session was already stopped server-side; client should end locally. */
+  stopped?: boolean;
 }
 
 export interface DestinationInfo {
@@ -105,12 +109,6 @@ export interface StreamInfo {
 
 export interface StopResponse {
   ok: boolean;
-  // Backend tears down the live signal + Redis state synchronously and
-  // sends this response immediately. `pending: true` means the durable
-  // session/location_logs rows are still being written in the background;
-  // the summary screen should fetch them by user_id (latest session) once
-  // the user lands there. Pre-fix responses lacked `pending` and embedded
-  // a nested `session` object — both shapes accepted for backwards compat.
   pending?: boolean;
   userId?: string;
   startedAt?: string;
@@ -141,11 +139,18 @@ export async function pingLocation(
   userId: string,
   payload: PingPayload,
 ): Promise<PingResponse> {
-  const res = await monitoringClient.post<PingResponse>(
-    `/${encodeURIComponent(userId)}/ping`,
-    payload,
-  );
-  return res.data;
+  try {
+    const res = await monitoringClient.post<PingResponse>(
+      `/${encodeURIComponent(userId)}/ping`,
+      payload,
+    );
+    return res.data;
+  } catch (e: any) {
+    if (e?.response?.status === 429) {
+      return { ok: true, filtered: true, reason: 'rate_limited' };
+    }
+    throw e;
+  }
 }
 
 export async function stopTracking(userId: string): Promise<StopResponse> {
